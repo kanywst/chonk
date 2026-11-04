@@ -24,8 +24,10 @@ import (
 	"github.com/kanywst/chonk/internal/history"
 	"github.com/kanywst/chonk/internal/inspect"
 	"github.com/kanywst/chonk/internal/owner"
+	"github.com/kanywst/chonk/internal/procs"
 	"github.com/kanywst/chonk/internal/reclaim"
 	"github.com/kanywst/chonk/internal/scan"
+	"github.com/kanywst/chonk/internal/system"
 	"github.com/kanywst/chonk/internal/tui"
 	"github.com/kanywst/chonk/internal/version"
 	"github.com/kanywst/chonk/internal/walk"
@@ -185,6 +187,8 @@ type jsonItem struct {
 	Parts       []jsonItem      `json:"parts,omitempty"`
 	Reclaimable int64           `json:"reclaimable_bytes,omitempty"`
 	Inspect     *inspect.Report `json:"inspect,omitempty"`
+	SizeUnknown bool            `json:"size_unknown,omitempty"`
+	Processes   []procs.Proc    `json:"processes,omitempty"`
 }
 
 type jsonAction struct {
@@ -199,6 +203,7 @@ func toJSON(it *owner.Item) jsonItem {
 		Kind: it.Owner.Kind.Slug(), Owner: it.Owner.ID, Name: it.Name(), Path: it.Path,
 		Size: it.Size, Logical: it.Logical, Touched: it.Touched, Safety: it.Owner.Safety.String(),
 		Why: it.Owner.Why, Regen: it.Owner.Regen, Hotspot: it.Hotspot, Reclaimable: it.Reclaimable(),
+		SizeUnknown: it.SizeUnknown,
 	}
 	for _, ac := range it.Owner.Actions {
 		e := ac.Expand(it.Path)
@@ -219,20 +224,32 @@ func (a *app) ls(ctx context.Context, out, errOut io.Writer) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	ps, _ := procs.List(ctx, procs.Exec)
+	running := procs.Match(rep.Items, ps, a.home)
+	vol, _ := system.VolumeOf(a.home)
+	outside := max(0, vol.Used-rep.Total)
 	if a.f.json {
 		items := make([]jsonItem, 0, len(rep.Items))
 		for _, it := range rep.Items {
-			items = append(items, toJSON(it))
+			j := toJSON(it)
+			j.Processes = running[it]
+			items = append(items, j)
 		}
-		return writeJSON(out, map[string]any{"total_bytes": rep.Total, "items": items})
+		return writeJSON(out, map[string]any{
+			"total_bytes": rep.Total, "volume_used_bytes": vol.Used, "volume_free_bytes": vol.Free,
+			"outside_scan_bytes": outside, "items": items,
+		})
 	}
 	base, hasBase := history.Baseline(past, snap.Time, 24*time.Hour)
 	minSize := int64(100 << 20)
 	if a.f.all {
 		minSize = 0
 	}
-	free, total, _ := reclaim.Free(a.home)
-	fmt.Fprintf(out, "%s scanned, %s free of %s\n", format.Bytes(rep.Total), format.Bytes(free), format.Bytes(total))
+	fmt.Fprintf(out, "%s scanned, %s free of %s", format.Bytes(rep.Total), format.Bytes(vol.Free), format.Bytes(vol.Total))
+	if outside > 1<<30 {
+		fmt.Fprintf(out, ", %s on the volume outside the scan (swap, logs, other users, /Library)", format.Bytes(outside))
+	}
+	fmt.Fprintln(out)
 	if hasBase {
 		fmt.Fprintf(out, "change since %s: %s\n", base.Time.Format("2006-01-02 15:04"), orZero(format.Delta(snap.Total-base.Total)))
 	}
@@ -244,7 +261,7 @@ func (a *app) ls(ctx context.Context, out, errOut io.Writer) error {
 		}
 		fmt.Fprintf(tw, "\n%s\t%7s\t\t\t\n", k, format.Bytes(rep.KindTotal(k)))
 		for _, it := range items {
-			if it.Size < minSize && (it.Node == nil || !it.Node.Denied) {
+			if it.Size < minSize && !it.SizeUnknown && (it.Node == nil || !it.Node.Denied) {
 				continue
 			}
 			delta := ""
@@ -258,7 +275,14 @@ func (a *app) ls(ctx context.Context, out, errOut io.Writer) error {
 			if it.Node != nil && it.Node.Denied {
 				extra = "unreadable (give the terminal Full Disk Access)"
 			}
-			fmt.Fprintf(tw, "  %s\t%7s\t%s\t%s\t\n", it.Name(), format.Bytes(it.Size), delta, extra)
+			if p := running[it]; len(p) > 0 {
+				extra = strings.TrimSpace(extra + "  " + format.Bytes(procs.Total(p)) + " running (" + p[0].Name() + ")")
+			}
+			size := format.Bytes(it.Size)
+			if it.SizeUnknown {
+				size = "?"
+			}
+			fmt.Fprintf(tw, "  %s\t%7s\t%s\t%s\t\n", it.Name(), size, delta, extra)
 		}
 	}
 	return tw.Flush()
@@ -303,9 +327,12 @@ func (a *app) why(ctx context.Context, path string, out io.Writer) error {
 		target.Touched = time.Unix(n.Touched, 0)
 	}
 	rpt := inspect.New(a.home).Inspect(ctx, target)
+	ps, _ := procs.List(ctx, procs.Exec)
+	running := procs.Match([]*owner.Item{target}, ps, a.home)[target]
 	if a.f.json {
 		j := toJSON(target)
 		j.Inspect = &rpt
+		j.Processes = running
 		return writeJSON(out, j)
 	}
 	fmt.Fprintf(out, "%s\n  %s, %s on disk", owner.Tilde(abs), target.Name(), format.Bytes(target.Size))
@@ -330,6 +357,15 @@ func (a *app) why(ctx context.Context, path string, out io.Writer) error {
 		}
 		if rpt.Note != "" {
 			fmt.Fprintf(out, "  %s\n", rpt.Note)
+		}
+	}
+	if len(running) > 0 {
+		fmt.Fprintf(out, "\nrunning (%s in memory):\n", format.Bytes(procs.Total(running)))
+		for i, p := range running {
+			if i >= 5 {
+				break
+			}
+			fmt.Fprintf(out, "  %7s  %s (pid %d)\n", format.Bytes(p.RSS), p.Name(), p.PID)
 		}
 	}
 	if len(n.Children) > 0 {

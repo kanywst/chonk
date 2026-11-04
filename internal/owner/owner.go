@@ -130,6 +130,10 @@ type Owner struct {
 	Safety  Safety
 	Actions []Action
 	Inspect string // the inspector that can look inside, if any
+	// Procs are substrings of the executable paths of processes that
+	// belong to this owner wherever they are installed, such as a VM's
+	// host agent.
+	Procs []string
 }
 
 // Item is one directory claimed by an owner.
@@ -148,6 +152,9 @@ type Item struct {
 	Parts []*Item
 	// Project is the project an artifact belongs to.
 	Project *Item
+	// SizeUnknown is set when nothing can say how big the item is until it
+	// is gone, such as APFS snapshots.
+	SizeUnknown bool
 }
 
 // Reclaimable is how much of a project its build outputs take.

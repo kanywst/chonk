@@ -93,6 +93,7 @@ func rules() []rule {
 		// developer Mac, and the ones a directory listing explains worst.
 		at("~/Library/Application Support/rancher-desktop/lima", Owner{
 			ID: "rancher-desktop", Name: "Rancher Desktop VM", Kind: KindVM, Safety: Careful, Inspect: "rancher-desktop",
+			Procs: []string{"Rancher Desktop.app/Contents/Resources/resources/darwin/lima/", "rancher-desktop/lima/"},
 			Why:   "Rancher Desktop runs Docker and Kubernetes in a Lima Linux VM. Its disk (diffdisk) holds every image, container, volume and cluster you have pulled or built. It grows as you use it and does not shrink by itself when you delete things inside.",
 			Regen: "Images are pulled again on next use; volumes and cluster state are gone for good.",
 			Actions: []Action{
@@ -104,6 +105,7 @@ func rules() []rule {
 		}),
 		at("~/Library/Containers/com.docker.docker", Owner{
 			ID: "docker-desktop", Name: "Docker Desktop VM", Kind: KindVM, Safety: Careful, Inspect: "docker-desktop",
+			Procs: []string{"com.docker.virtualization", "com.docker.backend", "com.docker.krun"},
 			Why:   "Docker Desktop keeps its Linux VM disk (Docker.raw) here. It holds every image, container, volume and build cache. It is sparse, so its length overstates what it takes on disk.",
 			Regen: "Images are pulled again on next use; volumes are gone for good.",
 			Actions: []Action{
@@ -113,6 +115,7 @@ func rules() []rule {
 		}),
 		at("~/.local/share/containers/podman/machine", Owner{
 			ID: "podman-machine", Name: "Podman machine", Kind: KindVM, Safety: Careful, Inspect: "podman-machine",
+			Procs: []string{"/gvproxy", "/vfkit", "/krunkit"},
 			Why:   "On macOS Podman runs containers in a Linux VM (podman machine). Its raw disk image holds every image, container and volume. It is sparse: the file length is the disk's maximum size, not what it takes.",
 			Regen: "Removing the machine deletes all its images, containers and volumes; `podman machine init` makes a fresh one.",
 			Actions: []Action{
@@ -168,6 +171,7 @@ func rules() []rule {
 		// Toolchains and package managers.
 		at("/nix", Owner{
 			ID: "nix", Name: "Nix store", Kind: KindToolchain, Safety: Careful, Inspect: "nix",
+			Procs: []string{"/nix-daemon"},
 			Why:   "Every package Nix has built or downloaded, including the ones only old generations still use. Old generations are what make rollback possible, and also what keeps the store growing.",
 			Regen: "Garbage collection drops the old generations, so you can no longer roll back to them.",
 			Actions: []Action{
@@ -214,7 +218,7 @@ func rules() []rule {
 		}),
 		at("~/.pyenv", Owner{ID: "pyenv", Name: "pyenv Pythons", Kind: KindToolchain, Safety: Careful, Why: "Every Python version pyenv built.", Regen: "A removed version is built again by `pyenv install`."}),
 		at("~/.cache/huggingface", cache("huggingface", "Hugging Face models", "Models are downloaded again on next use.")),
-		at("~/.ollama/models", Owner{ID: "ollama", Name: "Ollama models", Kind: KindToolchain, Safety: Careful, Why: "Local LLM weights pulled with `ollama pull`.", Regen: "Pulled again with `ollama pull`; remove single models with `ollama rm`."}),
+		at("~/.ollama/models", Owner{ID: "ollama", Name: "Ollama models", Kind: KindToolchain, Safety: Careful, Procs: []string{"/ollama"}, Why: "Local LLM weights pulled with `ollama pull`.", Regen: "Pulled again with `ollama pull`; remove single models with `ollama rm`."}),
 		at("~/.lmstudio", Owner{ID: "lmstudio", Name: "LM Studio models", Kind: KindToolchain, Safety: Careful, Why: "Local LLM weights downloaded in LM Studio.", Regen: "Downloaded again from LM Studio."}),
 		at("~/Library/Developer/Xcode/DerivedData", Owner{
 			ID: "xcode-deriveddata", Name: "Xcode DerivedData", Kind: KindBuild, Safety: Safe,

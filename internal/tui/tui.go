@@ -12,8 +12,10 @@ import (
 	"github.com/kanywst/chonk/internal/history"
 	"github.com/kanywst/chonk/internal/inspect"
 	"github.com/kanywst/chonk/internal/owner"
+	"github.com/kanywst/chonk/internal/procs"
 	"github.com/kanywst/chonk/internal/reclaim"
 	"github.com/kanywst/chonk/internal/scan"
+	"github.com/kanywst/chonk/internal/system"
 	"github.com/kanywst/chonk/internal/walk"
 )
 
@@ -34,7 +36,8 @@ type Backend interface {
 	Reclaim(ctx context.Context, it *owner.Item, a owner.Action) reclaim.Result
 	// Measure walks one path again; nil when it is gone.
 	Measure(path string) *walk.Node
-	Free() (free, total int64)
+	Volume() system.Volume
+	Procs(ctx context.Context) []procs.Proc
 }
 
 // System is the Backend for this machine.
@@ -70,10 +73,16 @@ func (s *System) Measure(path string) *walk.Node {
 	return nodes[0]
 }
 
-// Free is the free space on the home volume.
-func (s *System) Free() (int64, int64) {
-	f, t, _ := reclaim.Free(s.Home)
-	return f, t
+// Volume is the home volume's space.
+func (s *System) Volume() system.Volume {
+	v, _ := system.VolumeOf(s.Home)
+	return v
+}
+
+// Procs lists running processes.
+func (s *System) Procs(ctx context.Context) []procs.Proc {
+	ps, _ := procs.List(ctx, procs.Exec)
+	return ps
 }
 
 // Run opens the view.
@@ -100,6 +109,7 @@ type (
 		base history.Snapshot
 		has  bool
 	}
+	procsMsg     struct{ procs []procs.Proc }
 	inspectedMsg struct {
 		path string
 		rpt  inspect.Report
@@ -135,8 +145,8 @@ type model struct {
 	rep     *owner.Report
 	base    history.Snapshot
 	hasBase bool
-	free    int64
-	total   int64
+	vol     system.Volume
+	procsOf map[*owner.Item][]procs.Proc
 
 	rows   []row
 	cursor int
@@ -224,7 +234,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case scanDoneMsg:
 		m.rep, m.base, m.hasBase = msg.rep, msg.base, msg.has
-		m.free, m.total = m.b.Free()
+		m.vol = m.b.Volume()
 		m.screen = screenList
 		m.rebuild()
 		// Look inside every VM right away: trapped space is the one thing
@@ -236,7 +246,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.inspectCmd(it))
 			}
 		}
+		b, ctx := m.b, m.ctx
+		cmds = append(cmds, func() tea.Msg { return procsMsg{b.Procs(ctx)} })
 		return m, tea.Batch(cmds...)
+	case procsMsg:
+		if m.rep != nil {
+			m.procsOf = procs.Match(m.rep.Items, msg.procs, m.cfg.Home)
+		}
+		return m, nil
 	case inspectedMsg:
 		m.reports[msg.path] = msg.rpt
 		delete(m.inspecting, msg.path)
@@ -255,7 +272,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.freed += freed
 		}
 		m.applyReclaim(msg)
-		m.free, m.total = m.b.Free()
+		m.vol = m.b.Volume()
 		// The inside of a VM changed; look again.
 		if m.detail != nil && inspect.Has(m.detail.Owner.Inspect) {
 			m.inspecting[m.detail.Path] = true
@@ -502,7 +519,7 @@ func (m *model) rebuild() {
 		items := m.rep.ByKind(k)
 		var keep []*owner.Item
 		for _, it := range items {
-			if it.Size < 1<<20 && (it.Node == nil || !it.Node.Denied) {
+			if it.Size < 1<<20 && !it.SizeUnknown && (it.Node == nil || !it.Node.Denied) {
 				continue
 			}
 			if f != "" && !strings.Contains(strings.ToLower(it.Name()+" "+it.Path), f) {

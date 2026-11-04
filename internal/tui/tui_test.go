@@ -10,7 +10,9 @@ import (
 
 	"github.com/kanywst/chonk/internal/inspect"
 	"github.com/kanywst/chonk/internal/owner"
+	"github.com/kanywst/chonk/internal/procs"
 	"github.com/kanywst/chonk/internal/reclaim"
+	"github.com/kanywst/chonk/internal/system"
 	"github.com/kanywst/chonk/internal/walk"
 )
 
@@ -34,11 +36,16 @@ func (f *fake) Reclaim(_ context.Context, it *owner.Item, a owner.Action) reclai
 	return reclaim.Result{Path: it.Path, Action: a.Label, Freed: 70 * gib}
 }
 func (f *fake) Measure(string) *walk.Node { return f.after }
-func (f *fake) Free() (int64, int64)      { return 100 * gib, 500 * gib }
+func (f *fake) Volume() system.Volume {
+	return system.Volume{Total: 500 * gib, Used: 100 * gib, Free: 400 * gib}
+}
+func (f *fake) Procs(context.Context) []procs.Proc {
+	return []procs.Proc{{PID: 7, RSS: 4 * gib, Exe: "/x/limactl"}}
+}
 
 func report() *owner.Report {
 	vm := &owner.Owner{ID: "rancher-desktop", Name: "Rancher Desktop VM", Kind: owner.KindVM, Inspect: "rancher-desktop", Why: "a VM",
-		Actions: []owner.Action{{Label: "fstrim", Cmd: []string{"true"}}}}
+		Actions: []owner.Action{{Label: "fstrim", Cmd: []string{"true"}}}, Procs: []string{"limactl"}}
 	cache := &owner.Owner{ID: "c", Name: "Spotify cache", Kind: owner.KindCache, Why: "a cache"}
 	items := []*owner.Item{
 		{Owner: vm, Path: "/h/vm", Size: 80 * gib, Node: &walk.Node{Name: "/h/vm", Size: 80 * gib}},
@@ -60,12 +67,12 @@ func step(t *testing.T, m tea.Model, msg tea.Msg) tea.Model {
 					continue
 				}
 				switch r := c().(type) {
-				case scanDoneMsg, inspectedMsg, reclaimedMsg:
+				case scanDoneMsg, inspectedMsg, reclaimedMsg, procsMsg:
 					m = step(t, m, r)
 				}
 			}
 			return m
-		case scanDoneMsg, inspectedMsg, reclaimedMsg:
+		case scanDoneMsg, inspectedMsg, reclaimedMsg, procsMsg:
 			m, cmd = m.Update(out)
 		default:
 			return m
@@ -95,7 +102,7 @@ func TestFlow(t *testing.T) {
 	m = step(t, m, m.(model).scanCmd()())
 
 	v := view(m)
-	for _, want := range []string{"82.0G scanned", "Rancher Desktop VM", "70.0G trapped", "Spotify cache", "VMs and containers"} {
+	for _, want := range []string{"82.0G scanned", "Rancher Desktop VM", "70.0G trapped", "Spotify cache", "VMs and containers", "4.0G running", "18.0G outside the scan"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("list is missing %q:\n%s", want, v)
 		}
@@ -103,7 +110,7 @@ func TestFlow(t *testing.T) {
 
 	m = step(t, m, key("enter"))
 	v = view(m)
-	if !strings.Contains(v, "a VM") || !strings.Contains(v, "fstrim") {
+	if !strings.Contains(v, "a VM") || !strings.Contains(v, "fstrim") || !strings.Contains(v, "limactl") {
 		t.Fatalf("detail:\n%s", v)
 	}
 	m = step(t, m, key("enter"))

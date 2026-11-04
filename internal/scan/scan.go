@@ -9,6 +9,8 @@ import (
 
 	"github.com/kanywst/chonk/internal/history"
 	"github.com/kanywst/chonk/internal/owner"
+	"github.com/kanywst/chonk/internal/procs"
+	"github.com/kanywst/chonk/internal/system"
 	"github.com/kanywst/chonk/internal/walk"
 )
 
@@ -18,10 +20,15 @@ func Roots(home string) []string {
 	return []string{home, "/Applications", "/opt/homebrew", "/usr/local", "/nix"}
 }
 
-// Run walks roots and classifies them.
+// Run walks roots and classifies them. Local APFS snapshots, which no
+// directory shows, are added as an item of their own.
 func Run(ctx context.Context, roots []string, prog *walk.Progress) *owner.Report {
 	nodes := walk.Walk(ctx, roots, walk.Options{MinKeep: 1 << 20, Skip: skip}, prog)
-	return owner.Classify(nodes, owner.Options{})
+	rep := owner.Classify(nodes, owner.Options{})
+	if it := system.SnapshotItem(system.Snapshots(ctx, system.Runner(procs.Exec))); it != nil {
+		rep.Items = append(rep.Items, it)
+	}
+	return rep
 }
 
 // skip keeps the walk out of places that are not on this disk, or that
@@ -40,7 +47,9 @@ func skip(path string) bool {
 func Snapshot(r *owner.Report, now time.Time) history.Snapshot {
 	s := history.Snapshot{Time: now, Total: r.Total, Items: map[string]int64{}}
 	for _, it := range r.Items {
-		s.Items[owner.Tilde(it.Path)] += it.Size
+		if !it.SizeUnknown {
+			s.Items[owner.Tilde(it.Path)] += it.Size
+		}
 	}
 	return s
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/kanywst/chonk/internal/format"
 	"github.com/kanywst/chonk/internal/owner"
+	"github.com/kanywst/chonk/internal/procs"
 )
 
 func (m model) View() tea.View {
@@ -51,8 +52,13 @@ func (m model) header() string {
 	w := m.inner()
 	parts := []string{st.badge.Render("chonk")}
 	parts = append(parts, st.bold.Render(format.Bytes(m.rep.Total))+st.dim.Render(" scanned"))
-	if m.total > 0 {
-		parts = append(parts, st.bold.Render(format.Bytes(m.free))+st.dim.Render(" free of "+format.Bytes(m.total)))
+	if m.vol.Total > 0 {
+		parts = append(parts, st.bold.Render(format.Bytes(m.vol.Free))+st.dim.Render(" free of "+format.Bytes(m.vol.Total)))
+		// What the volume holds that no walked directory explains: swap,
+		// logs, other users, /Library, /private/var.
+		if out := m.vol.Used - m.rep.Total; out > 1<<30 {
+			parts = append(parts, st.text.Render(format.Bytes(out))+st.dim.Render(" outside the scan"))
+		}
 	}
 	if m.hasBase {
 		d := format.Delta(m.rep.Total - m.base.Total)
@@ -178,6 +184,11 @@ func (m model) itemLine(it *owner.Item, cur bool, biggest int64, w int) string {
 	st := m.st
 	const barW = 14
 	size := fmt.Sprintf("%7s", format.Bytes(it.Size))
+	if it.SizeUnknown {
+		size = fmt.Sprintf("%7s", "?")
+	} else if it.Node != nil && it.Node.Denied {
+		size = fmt.Sprintf("%7s", "locked")
+	}
 	bar := m.bar(it.Owner.Kind, it.Size, biggest, barW)
 
 	var tags []string
@@ -197,6 +208,9 @@ func (m model) itemLine(it *owner.Item, cur bool, biggest int64, w int) string {
 	}
 	if rc := it.Reclaimable(); rc > 0 {
 		tags = append(tags, st.dim.Render(format.Bytes(rc)+" build output"))
+	}
+	if ps := m.procsOf[it]; len(ps) > 0 {
+		tags = append(tags, st.warn.Render("▶ "+format.Bytes(procs.Total(ps))+" running"))
 	}
 	if !it.Touched.IsZero() {
 		tags = append(tags, st.faint.Render(format.Age(time.Since(it.Touched))))
@@ -241,7 +255,11 @@ func (m model) detailView() string {
 	var lines []string
 
 	title := st.kind(it.Owner.Kind).Render("■ ") + st.title.Render(it.Name())
-	right := st.bold.Render(format.Bytes(it.Size)) + st.dim.Render(" on disk  ") + st.safety(it.Owner.Safety).Render(it.Owner.Safety.String())
+	sz := format.Bytes(it.Size)
+	if it.SizeUnknown {
+		sz = "size unknown"
+	}
+	right := st.bold.Render(sz) + st.dim.Render(" on disk  ") + st.safety(it.Owner.Safety).Render(it.Owner.Safety.String())
 	lines = append(lines, title+strings.Repeat(" ", max(2, w-lipgloss.Width(title)-lipgloss.Width(right)))+right)
 	sub := owner.Tilde(it.Path)
 	if !it.Touched.IsZero() {
@@ -278,6 +296,18 @@ func (m model) detailView() string {
 		}
 	} else if m.inspecting[it.Path] {
 		lines = append(lines, "", m.spin.View()+st.dim.Render(" asking the owner what is inside…"))
+	}
+
+	// Processes tied to it: a VM's host agent, a dev server in a project.
+	if ps := m.procsOf[it]; len(ps) > 0 {
+		lines = append(lines, "", st.heading.Render(fmt.Sprintf("Running (%s in memory)", format.Bytes(procs.Total(ps)))))
+		for i, p := range ps {
+			if i >= 4 {
+				lines = append(lines, st.faint.Render(fmt.Sprintf("  and %d more", len(ps)-i)))
+				break
+			}
+			lines = append(lines, fmt.Sprintf("  %s  %s %s", st.bold.Render(fmt.Sprintf("%7s", format.Bytes(p.RSS))), st.text.Render(p.Name()), st.faint.Render(fmt.Sprintf("pid %d", p.PID))))
+		}
 	}
 
 	// The biggest directories inside, so nothing stays a black box.
@@ -379,6 +409,13 @@ func (m model) confirmBox(c choice) string {
 	}
 	if a.Note != "" {
 		lines = append(lines, "", st.dim.Render(ansi.Wrap(a.Note, min(70, m.inner()-10), " ")))
+	}
+	src := c.item
+	if src.Project != nil {
+		src = src.Project
+	}
+	if ps := m.procsOf[src]; len(ps) > 0 && !a.Inside {
+		lines = append(lines, "", st.warn.Render(ansi.Wrap(fmt.Sprintf("%d process(es) are running from here (%s). Removing files under them can break them.", len(ps), ps[0].Name()), min(70, m.inner()-10), " ")))
 	}
 	lines = append(lines, "", st.key.Render("y")+st.dim.Render(" run   ")+st.key.Render("any other key")+st.dim.Render(" cancel"))
 	return st.modal.Render(strings.Join(lines, "\n"))
