@@ -117,6 +117,9 @@ func TestFlow(t *testing.T) {
 	if !strings.Contains(view(m), "y run") {
 		t.Fatalf("no confirm dialog:\n%s", view(m))
 	}
+	if !strings.Contains(view(m), "running from here") {
+		t.Errorf("a lossy action on a running VM should warn:\n%s", view(m))
+	}
 	// Anything but y cancels.
 	m = step(t, m, key("enter"))
 	if len(f.reclaims) != 0 || strings.Contains(view(m), "y run") {

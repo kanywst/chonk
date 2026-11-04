@@ -414,7 +414,7 @@ func (m model) confirmBox(c choice) string {
 	if src.Project != nil {
 		src = src.Project
 	}
-	if ps := m.procsOf[src]; len(ps) > 0 && !a.Inside {
+	if ps := m.procsOf[src]; len(ps) > 0 && !a.Inside && !a.Lossless {
 		lines = append(lines, "", st.warn.Render(ansi.Wrap(fmt.Sprintf("%d process(es) are running from here (%s). Removing files under them can break them.", len(ps), ps[0].Name()), min(70, m.inner()-10), " ")))
 	}
 	lines = append(lines, "", st.key.Render("y")+st.dim.Render(" run   ")+st.key.Render("any other key")+st.dim.Render(" cancel"))

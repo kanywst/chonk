@@ -74,6 +74,9 @@ type Action struct {
 	// Inside is true when the action frees space inside a VM disk, which
 	// only reaches macOS after a trim.
 	Inside bool `json:"-"`
+	// Lossless is true when the action removes nothing, such as a trim that
+	// only hands unused blocks back.
+	Lossless bool `json:"-"`
 }
 
 // Expand fills in the placeholders for path.

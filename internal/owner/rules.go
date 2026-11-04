@@ -97,7 +97,7 @@ func rules() []rule {
 			Why:   "Rancher Desktop runs Docker and Kubernetes in a Lima Linux VM. Its disk (diffdisk) holds every image, container, volume and cluster you have pulled or built. It grows as you use it and does not shrink by itself when you delete things inside.",
 			Regen: "Images are pulled again on next use; volumes and cluster state are gone for good.",
 			Actions: []Action{
-				{Label: "Return space the VM already freed (fstrim)", Cmd: []string{"rdctl", "shell", "--", "sudo", "fstrim", "-v", "/mnt/data"}, Safety: Safe, Needs: "rdctl", Note: "Loses nothing. Only hands back blocks the guest no longer uses."},
+				{Label: "Return space the VM already freed (fstrim)", Cmd: []string{"rdctl", "shell", "--", "sudo", "fstrim", "-v", "/mnt/data"}, Safety: Safe, Needs: "rdctl", Lossless: true, Note: "Loses nothing. Only hands back blocks the guest no longer uses."},
 				{Label: "Remove unused images, stopped containers and build cache", Cmd: []string{"docker", "system", "prune", "-a", "-f"}, Env: rdDocker, Safety: Careful, Needs: "docker", Inside: true, Note: trimNote},
 				{Label: "Also remove unused volumes", Cmd: []string{"docker", "system", "prune", "-a", "-f", "--volumes"}, Env: rdDocker, Safety: Danger, Needs: "docker", Inside: true, Note: trimNote},
 				{Label: "Factory reset Rancher Desktop", Cmd: []string{"rdctl", "factory-reset"}, Safety: Danger, Needs: "rdctl", Note: "Deletes the VM, every image, volume and cluster, and Rancher Desktop's settings."},

@@ -151,7 +151,7 @@ func rancher(ctx context.Context, in *Inspector, it *owner.Item) Report {
 		r.Trapped = alloc - used
 		r.add("Trapped", "%s freed inside the VM but still held on this Mac", format.Bytes(r.Trapped))
 	}
-	r.Trim = &owner.Action{Label: "Return trapped space (fstrim)", Cmd: []string{"rdctl", "shell", "--", "sudo", "fstrim", "-v", "/mnt/data"}, Safety: owner.Safe, Needs: "rdctl"}
+	r.Trim = &owner.Action{Label: "Return trapped space (fstrim)", Cmd: []string{"rdctl", "shell", "--", "sudo", "fstrim", "-v", "/mnt/data"}, Safety: owner.Safe, Needs: "rdctl", Lossless: true}
 	if df, err := in.run(ctx, []string{"DOCKER_HOST=unix://~/.rd/docker.sock"}, "docker", "system", "df", "--format", "{{json .}}"); err == nil {
 		r.Lines = append(r.Lines, dockerDF(df)...)
 	}
