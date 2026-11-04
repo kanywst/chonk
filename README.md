@@ -1,3 +1,5 @@
+<img src="assets/logo-256.png" alt="chonk logo" width="128" align="right">
+
 # chonk
 
 [![CI](https://github.com/kanywst/chonk/actions/workflows/ci.yml/badge.svg)](https://github.com/kanywst/chonk/actions/workflows/ci.yml)
