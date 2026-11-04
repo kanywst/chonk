@@ -29,7 +29,9 @@ func readDir(path string) ([]entry, error) {
 	buf := *bp
 	var out []entry
 	for {
-		//nolint:gosec // G103: the syscall needs raw pointers to al and buf, both live for the call
+		// x/sys has no libSystem wrapper for getattrlistbulk. Its number has
+		// been 461 since macOS 10.10, and any error falls back to ReadDir.
+		//nolint:gosec,staticcheck // G103: raw pointers to al and buf, live for the call; SA1019: see above
 		n, _, errno := unix.Syscall6(unix.SYS_GETATTRLISTBULK, f.Fd(), uintptr(unsafe.Pointer(&al)), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), uintptr(unix.FSOPT_PACK_INVAL_ATTRS), 0)
 		if errno != 0 {
 			if errno == unix.EINTR {
