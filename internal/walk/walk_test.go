@@ -2,6 +2,7 @@ package walk
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -87,8 +88,8 @@ func TestSkip(t *testing.T) {
 	write(t, filepath.Join(root, "CloudStorage", "x"), 3<<20)
 	nodes := Walk(context.Background(), []string{root}, Options{Skip: func(p string) bool { return filepath.Base(p) == "CloudStorage" }}, nil)
 	c := nodes[0].Child("CloudStorage")
-	if c == nil || !c.Denied || c.Size != 0 {
-		t.Fatalf("skipped dir = %+v, want listed, denied, size 0", c)
+	if c == nil || !c.Skipped || c.Denied || c.Size != 0 {
+		t.Fatalf("skipped dir = %+v, want listed, skipped, size 0", c)
 	}
 }
 
@@ -98,5 +99,26 @@ func TestMarkersOf(t *testing.T) {
 	write(t, filepath.Join(root, "package.json"), 1)
 	if m := MarkersOf(root); m != MarkCacheDirTag|MarkPackageJSON {
 		t.Errorf("markers = %b", m)
+	}
+}
+
+func TestBulkMatchesPortable(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a", "b", "c"), 3<<20)
+	write(t, filepath.Join(root, "a", "x"), 5000)
+	write(t, filepath.Join(root, "名前 with space"), 70000)
+	if err := os.Symlink("a", filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 300 { // more entries than one bulk call returns
+		write(t, filepath.Join(root, "many", fmt.Sprintf("f%03d", i)), 100)
+	}
+	fast := Walk(context.Background(), []string{root}, Options{}, nil)[0]
+	slow := Walk(context.Background(), []string{root}, Options{Portable: true}, nil)[0]
+	if fast.Size != slow.Size || fast.Files != slow.Files || fast.Logical != slow.Logical || fast.Touched != slow.Touched {
+		t.Errorf("bulk %d/%d/%d/%d, portable %d/%d/%d/%d", fast.Size, fast.Files, fast.Logical, fast.Touched, slow.Size, slow.Files, slow.Logical, slow.Touched)
+	}
+	if fast.Child("名前 with space") != nil || fast.Child("many") == nil {
+		t.Error("children")
 	}
 }

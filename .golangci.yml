@@ -18,6 +18,7 @@ linters:
         # chonk reads directories anywhere under the scan roots; that is the
         # whole job.
         - G304
+        - G703
   exclusions:
     presets:
       - std-error-handling

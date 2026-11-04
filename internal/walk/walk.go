@@ -7,7 +7,6 @@ package walk
 
 import (
 	"context"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,6 +31,7 @@ const (
 	MarkNextConfig
 	MarkGradle
 	MarkTerraform
+	MarkMix
 )
 
 var markerNames = map[string]Marker{
@@ -49,6 +49,7 @@ var markerNames = map[string]Marker{
 	"build.gradle":     MarkGradle,
 	"build.gradle.kts": MarkGradle,
 	"main.tf":          MarkTerraform,
+	"mix.exs":          MarkMix,
 }
 
 // Node is one directory. Size, Files and Touched cover the whole subtree.
@@ -62,7 +63,8 @@ type Node struct {
 	Files    int64
 	Touched  int64 // newest mtime in the subtree, unix seconds
 	Markers  Marker
-	Denied   bool // this directory could not be read
+	Denied   bool // this directory could not be read, so its size is unknown
+	Skipped  bool // left out on purpose (Options.Skip)
 }
 
 // Path is the node's full path.
@@ -130,11 +132,14 @@ func splitPath(rel string) func(func(string) bool) {
 
 // Options tunes a walk.
 type Options struct {
-	Workers int   // concurrent directory readers; 0 means 4 per CPU
+	Workers int   // concurrent directory readers; 0 means 2 per CPU (more only adds contention)
 	MinKeep int64 // directories smaller than this keep their totals but drop their children
 	// Skip returns true for directories that must not be entered (they are
 	// still listed, with Denied set and no size).
 	Skip func(path string) bool
+	// Portable makes the walk use ReadDir and lstat even where a faster
+	// bulk call exists. Tests use it to compare the two.
+	Portable bool
 }
 
 // Progress counts what a walk has seen so far. It is safe to read while the
@@ -148,6 +153,7 @@ type Progress struct {
 type walker struct {
 	ctx  context.Context
 	opt  Options
+	read func(string) ([]entry, error)
 	sem  chan struct{}
 	prog *Progress
 	seen sync.Map // fileID -> struct{}, for files with more than one link
@@ -157,12 +163,15 @@ type walker struct {
 // stays on each root's device: mount points below a root are not entered.
 func Walk(ctx context.Context, roots []string, opt Options, prog *Progress) []*Node {
 	if opt.Workers <= 0 {
-		opt.Workers = 4 * runtime.NumCPU()
+		opt.Workers = 2 * runtime.NumCPU()
 	}
 	if prog == nil {
 		prog = &Progress{}
 	}
-	w := &walker{ctx: ctx, opt: opt, sem: make(chan struct{}, opt.Workers), prog: prog}
+	w := &walker{ctx: ctx, opt: opt, read: readDir, sem: make(chan struct{}, opt.Workers), prog: prog}
+	if opt.Portable {
+		w.read = readDirPortable
+	}
 	var out []*Node
 	for _, r := range roots {
 		r = filepath.Clean(r)
@@ -183,13 +192,7 @@ func (w *walker) dir(path string, n *Node, dev uint64) {
 		return
 	}
 	w.prog.Dirs.Add(1)
-	f, err := os.Open(path)
-	if err != nil {
-		n.Denied = true
-		return
-	}
-	entries, err := f.ReadDir(-1)
-	_ = f.Close()
+	entries, err := w.read(path)
 	if err != nil && len(entries) == 0 {
 		n.Denied = true
 		return
@@ -197,49 +200,41 @@ func (w *walker) dir(path string, n *Node, dev uint64) {
 
 	var subdirs []*Node
 	for _, e := range entries {
-		name := e.Name()
-		if m, ok := markerNames[name]; ok {
+		if m, ok := markerNames[e.name]; ok {
 			n.Markers |= m
 		}
-		full := filepath.Join(path, name)
-		fi, err := os.Lstat(full)
-		if err != nil {
-			continue
+		if e.mtime > n.Touched {
+			n.Touched = e.mtime
 		}
-		st := statOf(fi)
-		if st.mtime > n.Touched {
-			n.Touched = st.mtime
-		}
-		if e.IsDir() {
-			n.Own += st.alloc // the directory entry itself
-			if st.dev != dev {
+		switch e.kind {
+		case kindDir:
+			if e.dev != dev {
 				continue // a mount point
 			}
-			c := &Node{Name: name, Parent: n}
-			if w.opt.Skip != nil && w.opt.Skip(full) {
-				c.Denied = true
+			c := &Node{Name: e.name, Parent: n}
+			if w.opt.Skip != nil && w.opt.Skip(filepath.Join(path, e.name)) {
+				c.Skipped = true
 			}
 			subdirs = append(subdirs, c)
 			continue
-		}
-		if fi.Mode()&fs.ModeSymlink != 0 {
+		case kindLink:
 			continue
 		}
-		if st.nlink > 1 {
-			if _, dup := w.seen.LoadOrStore(st.id, struct{}{}); dup {
+		if e.nlink > 1 {
+			if _, dup := w.seen.LoadOrStore(fileID{e.dev, e.ino}, struct{}{}); dup {
 				continue
 			}
 		}
-		n.Own += st.alloc
-		n.Logical += fi.Size()
+		n.Own += e.alloc
+		n.Logical += e.size
 		n.Files++
 		w.prog.Files.Add(1)
-		w.prog.Bytes.Add(st.alloc)
+		w.prog.Bytes.Add(e.alloc)
 	}
 
 	var wg sync.WaitGroup
 	for _, c := range subdirs {
-		if c.Denied {
+		if c.Skipped {
 			continue
 		}
 		cpath := filepath.Join(path, c.Name)
@@ -273,7 +268,7 @@ func (w *walker) dir(path string, n *Node, dev uint64) {
 	})
 	kept := subdirs[:0]
 	for _, c := range subdirs {
-		if c.Size >= w.opt.MinKeep || c.Denied {
+		if c.Size >= w.opt.MinKeep || c.Denied || c.Skipped {
 			kept = append(kept, c)
 		} else {
 			c.Children = nil
