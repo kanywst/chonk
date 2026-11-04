@@ -90,13 +90,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The rules the author's editor uses, written here rather than as a
       # repo config file: no hard wrapping, duplicate headings allowed.
+      # CHANGELOG.md is release-please's output, in its own format.
       - name: markdownlint
         run: |
           cat > "$RUNNER_TEMP/markdownlint.jsonc" <<'JSON'
           {"config": {"default": true, "MD013": false, "MD024": false, "MD036": false, "MD041": false, "MD060": false,
             "MD033": {"allowed_elements": ["picture", "source", "img"]}}}
           JSON
-          npx --yes markdownlint-cli2@0.24.0 --config "$RUNNER_TEMP/markdownlint.jsonc" "**/*.md"
+          npx --yes markdownlint-cli2@0.24.0 --config "$RUNNER_TEMP/markdownlint.jsonc" "**/*.md" "#CHANGELOG.md"
 
   vulncheck:
     runs-on: ubuntu-latest
