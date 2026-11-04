@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/kanywst/chonk/internal/demo"
 	"github.com/kanywst/chonk/internal/format"
 	"github.com/kanywst/chonk/internal/history"
 	"github.com/kanywst/chonk/internal/inspect"
@@ -113,6 +114,11 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	case "":
 		if !term.IsTerminal(int(os.Stdout.Fd())) {
 			return errors.New("the interactive view needs a terminal; use `chonk ls`")
+		}
+		if os.Getenv("CHONK_DEMO") != "" {
+			// Canned data for the README recording: nothing real is shown,
+			// saved or run.
+			return tui.Run(ctx, tui.Config{Home: demo.Home, Backend: demo.New(), NoSave: true})
 		}
 		return tui.Run(ctx, tui.Config{Home: home, Store: app.store, Ledger: app.ledger, NoSave: f.noSave})
 	case "ls":

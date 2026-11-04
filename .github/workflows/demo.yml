@@ -1,0 +1,78 @@
+name: Demo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - demo.tape
+      - cmd/**
+      - internal/**
+      - .github/workflows/demo.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Renders with third-party tools and no write token.
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install ffmpeg and ttyd
+        env:
+          TTYD_VERSION: 1.7.7
+          TTYD_SHA256: 8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          curl -fsSL -o /tmp/ttyd "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64"
+          echo "${TTYD_SHA256}  /tmp/ttyd" | sha256sum -c -
+          sudo install -m 755 /tmp/ttyd /usr/local/bin/ttyd
+      - name: Install vhs
+        # v0.11.0 is what renders on this runner for kanywst/y509; v0.12.0
+        # exited 0 there without writing the file.
+        env:
+          GOTOOLCHAIN: auto
+        run: go install github.com/charmbracelet/vhs@v0.11.0
+      - name: Render demo.gif
+        run: |
+          rm -f demo.gif
+          vhs demo.tape
+          if [ ! -s demo.gif ] || [ "$(head -c 4 demo.gif)" != "GIF8" ] || [ "$(tail -c 1 demo.gif)" != ";" ]; then
+            echo "::error::vhs did not write a usable demo.gif"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: demo
+          path: demo.gif
+          retention-days: 1
+
+  # Only commits the rendered file; runs nothing it downloaded.
+  commit:
+    needs: render
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: demo
+      - name: Commit if changed
+        run: |
+          git diff --quiet -- demo.gif && exit 0
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add demo.gif
+          git commit -m "chore(demo): refresh demo.gif"
+          git push
