@@ -25,8 +25,11 @@ jobs:
     # Forks get no secrets, and Dependabot's runs read a different secret
     # store with a read-only token, so both would fail on authentication
     # rather than say anything useful. Drafts wait until they are ready.
+    # release-please's branch is a generated changelog and version bump,
+    # with nothing in it for this prompt to check.
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
+      !startsWith(github.event.pull_request.head.ref, 'release-please--') &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest

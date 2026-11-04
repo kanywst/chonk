@@ -29,19 +29,16 @@ archives:
 checksum:
   name_template: "{{ .ProjectName }}-{{ .Version }}-checksums.txt"
 
+# release-please writes the changelog (CHANGELOG.md and the release body).
 changelog:
-  use: github
-  sort: asc
-  filters:
-    exclude:
-      - "^chore"
-      - "^ci"
-      - "^docs"
-      - "^test"
+  disable: true
 
 release:
   prerelease: auto
   replace_existing_artifacts: true
+  # release-please already created the release with its notes; add the
+  # artifacts to it rather than rewriting it.
+  mode: keep-existing
 
 sboms:
   - artifacts: archive

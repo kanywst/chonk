@@ -31,8 +31,14 @@ Disk viewers list directories. Cleaners delete a fixed list of caches. Neither t
 ## Install
 
 ```sh
+# Homebrew (macOS, Linux)
+brew install --cask kanywst/tap/chonk
+
+# Go
 go install github.com/kanywst/chonk/cmd/chonk@latest
 ```
+
+Linux `.deb` / `.rpm` packages and archives are on the [releases page](https://github.com/kanywst/chonk/releases). Verify an archive with `gh attestation verify <archive> -R kanywst/chonk`.
 
 On macOS, give your terminal Full Disk Access (System Settings, Privacy & Security) so chonk can measure Mail, Messages and other protected folders; without it they are listed as locked rather than counted as empty.
 
@@ -80,6 +86,19 @@ CHONK_DEMO=1 go run ./cmd/chonk   # the canned machine the demo is recorded on
 CI builds for macOS and Linux on amd64 and arm64, runs the tests with the race detector on both, lints Go and Markdown, checks the release config and known vulnerabilities, and re-records `demo.gif` when the view changes. Pull requests get a review from Claude (`.github/workflows/claude-review.yml`), which needs a `CLAUDE_CODE_OAUTH_TOKEN` secret.
 
 [DESIGN.md](DESIGN.md) explains the model and what was learned from kanywst/sweep.
+
+## Releases
+
+chonk follows [semantic versioning](https://semver.org). Versions are computed from [conventional commits](https://www.conventionalcommits.org) by release-please, which keeps a release pull request open on main with the next version and its [CHANGELOG](CHANGELOG.md) entry:
+
+| Commit | Release |
+| --- | --- |
+| `fix:` | patch (`0.1.0` to `0.1.1`) |
+| `feat:` | minor (`0.1.0` to `0.2.0`) |
+| `feat!:` or a `BREAKING CHANGE:` footer | minor below `1.0.0`, major from then on |
+| `chore:` `ci:` `docs:` `test:` `refactor:` | none on their own |
+
+Merging the release pull request tags `vX.Y.Z`; goreleaser then builds for macOS and Linux, signs the checksums with cosign, attaches SBOMs and build provenance, and updates the Homebrew cask. Pull requests are squash-merged, so their titles must be conventional commits; a check enforces it.
 
 ## License
 
