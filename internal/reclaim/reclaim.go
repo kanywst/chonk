@@ -120,6 +120,11 @@ func Do(ctx context.Context, home string, it *owner.Item, a owner.Action, run Ru
 	case a.Needs != "" && func() bool { _, e := LookPath(home, a.Needs); return e != nil }():
 		err = fmt.Errorf("%s is not installed", a.Needs)
 	default:
+		// Run the program the check above found, not whatever comes first
+		// on this process's own PATH.
+		if p, e := LookPath(home, a.Cmd[0]); e == nil {
+			a.Cmd[0] = p
+		}
 		r.Output, err = run(ctx, a, Env(home, a.Env))
 	}
 	if err != nil {
@@ -145,7 +150,20 @@ func lastLine(s string) string {
 
 // Trash moves path into the user's Trash, renaming it if the name is taken.
 func Trash(home, path string) error {
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("refusing to trash a relative path: %s", path)
+	}
+	// Never the home, a scan root, or anything holding the Trash itself.
+	for _, p := range []string{"/", home, "/Applications", "/opt/homebrew", "/usr/local", "/nix", filepath.Join(home, "Library")} {
+		if path == filepath.Clean(p) {
+			return fmt.Errorf("refusing to trash %s", path)
+		}
+	}
 	dir := filepath.Join(home, ".Trash")
+	if path == dir || strings.HasPrefix(dir, path+"/") {
+		return fmt.Errorf("refusing to trash %s: it holds the Trash", path)
+	}
 	if _, err := os.Stat(dir); err != nil {
 		dir = filepath.Join(home, ".local", "share", "Trash", "files")
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -155,8 +173,15 @@ func Trash(home, path string) error {
 	base := filepath.Base(path)
 	dst := filepath.Join(dir, base)
 	for i := 2; ; i++ {
-		if _, err := os.Lstat(dst); errors.Is(err, os.ErrNotExist) {
+		_, err := os.Lstat(dst)
+		if errors.Is(err, os.ErrNotExist) {
 			break
+		}
+		if err != nil {
+			return err
+		}
+		if i > 1000 {
+			return fmt.Errorf("the Trash already holds 1000 items called %s", base)
 		}
 		dst = filepath.Join(dir, fmt.Sprintf("%s %d", base, i))
 	}

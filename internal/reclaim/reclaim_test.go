@@ -31,6 +31,18 @@ func TestTrashRenamesOnClash(t *testing.T) {
 	}
 }
 
+func TestTrashRefusesRoots(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, ".Trash"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{home, home + "/", "/", filepath.Join(home, ".Trash"), "relative"} {
+		if err := Trash(home, p); err == nil {
+			t.Errorf("Trash(%q) should be refused", p)
+		}
+	}
+}
+
 func TestDo(t *testing.T) {
 	home := t.TempDir()
 	it := &owner.Item{Owner: &owner.Owner{ID: "x"}, Path: filepath.Join(home, "proj", "target"), Size: 42}

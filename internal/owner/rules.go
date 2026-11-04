@@ -23,9 +23,13 @@ type rule struct {
 	path  string
 	each  bool
 	owner func(name string) Owner
+	skip  func(name string) bool // children an each rule leaves alone
 }
 
 func (r rule) match(c cand) *Owner {
+	if r.each && r.skip != nil && r.skip(c.Node.Name) {
+		return nil
+	}
 	if r.each && c.parentRel() == r.path || !r.each && c.Rel == r.path {
 		o := r.owner(c.Node.Name)
 		return &o
@@ -39,8 +43,18 @@ func at(rel string, o Owner) rule {
 }
 
 // each claims every direct child of a path, naming the owner after it.
-func each(parent string, f func(name string) Owner) rule {
-	return rule{path: parent, each: true, owner: f}
+// Children for which an optional skip returns true are left to later rules.
+func each(parent string, f func(name string) Owner, skip ...func(string) bool) rule {
+	r := rule{path: parent, each: true, owner: f}
+	if len(skip) > 0 {
+		r.skip = skip[0]
+	}
+	return r
+}
+
+func withEnv(a Action, env ...string) Action {
+	a.Env = env
+	return a
 }
 
 // trash moves the item to the Trash.
@@ -66,6 +80,9 @@ func cache(id, name, regen string, acts ...Action) Owner {
 // docker context is.
 var rdDocker = []string{"DOCKER_HOST=unix://~/.rd/docker.sock"}
 
+// DockerDesktopEnv points docker at Docker Desktop's engine.
+var DockerDesktopEnv = []string{"DOCKER_HOST=unix://~/.docker/run/docker.sock"}
+
 var trimNote = "Space freed inside a VM only reaches macOS after a trim; chonk runs one afterwards when the VM supports it."
 
 // rules are checked in order; the first that returns an owner claims the
@@ -90,8 +107,8 @@ func rules() []rule {
 			Why:   "Docker Desktop keeps its Linux VM disk (Docker.raw) here. It holds every image, container, volume and build cache. It is sparse, so its length overstates what it takes on disk.",
 			Regen: "Images are pulled again on next use; volumes are gone for good.",
 			Actions: []Action{
-				{Label: "Remove unused images, stopped containers and build cache", Cmd: []string{"docker", "system", "prune", "-a", "-f"}, Safety: Careful, Needs: "docker"},
-				{Label: "Also remove unused volumes", Cmd: []string{"docker", "system", "prune", "-a", "-f", "--volumes"}, Safety: Danger, Needs: "docker"},
+				{Label: "Remove unused images, stopped containers and build cache", Cmd: []string{"docker", "system", "prune", "-a", "-f"}, Env: DockerDesktopEnv, Safety: Careful, Needs: "docker"},
+				{Label: "Also remove unused volumes", Cmd: []string{"docker", "system", "prune", "-a", "-f", "--volumes"}, Env: DockerDesktopEnv, Safety: Danger, Needs: "docker"},
 			},
 		}),
 		at("~/.local/share/containers/podman/machine", Owner{
@@ -113,7 +130,7 @@ func rules() []rule {
 			ID: "orbstack", Name: "OrbStack", Kind: KindVM, Safety: Careful,
 			Why:     "OrbStack's Linux VM, containers and machines.",
 			Regen:   "Images are pulled again; machines and volumes are gone for good.",
-			Actions: []Action{run("Remove unused images, stopped containers and build cache", Careful, "docker", "system", "prune", "-a", "-f")},
+			Actions: []Action{withEnv(run("Remove unused images, stopped containers and build cache", Careful, "docker", "system", "prune", "-a", "-f"), "DOCKER_HOST=unix://~/.orbstack/run/docker.sock")},
 		}),
 		each("~/.lima", func(name string) Owner {
 			return Owner{
@@ -122,12 +139,12 @@ func rules() []rule {
 				Regen:   "Deleting the VM deletes everything inside it; `limactl create` makes a new one.",
 				Actions: []Action{run("Delete this VM", Danger, "limactl", "delete", "-f", "{name}")},
 			}
-		}),
+		}, func(name string) bool { return strings.HasPrefix(name, "_") }), // _config, _networks, _disks
 		at("~/.colima", Owner{
 			ID: "colima", Name: "Colima VMs", Kind: KindVM, Safety: Careful,
 			Why:     "Colima runs Docker in Lima VMs; their disks live here.",
 			Regen:   "Images are pulled again on next use; volumes are gone for good.",
-			Actions: []Action{run("Remove unused images, stopped containers and build cache", Careful, "docker", "system", "prune", "-a", "-f")},
+			Actions: []Action{withEnv(run("Remove unused images, stopped containers and build cache (default profile)", Careful, "docker", "system", "prune", "-a", "-f"), "DOCKER_HOST=unix://~/.colima/default/docker.sock")},
 		}),
 		at("~/Library/Containers/com.utmapp.UTM", Owner{
 			ID: "utm", Name: "UTM VMs", Kind: KindVM, Safety: Danger,
@@ -155,7 +172,7 @@ func rules() []rule {
 			Regen: "Garbage collection drops the old generations, so you can no longer roll back to them.",
 			Actions: []Action{
 				run("Delete store paths nothing refers to", Safe, "nix-store", "--gc"),
-				run("Delete old generations, then collect", Careful, "sudo", "nix-collect-garbage", "-d"),
+				{Label: "Delete old generations, then collect", Cmd: []string{"sudo", "-n", "nix-collect-garbage", "-d"}, Safety: Careful, Needs: "sudo", Note: "Needs root. chonk cannot ask for a password inside the view; run `sudo -v` in this terminal first, or run the command yourself."},
 			},
 		}),
 		at("/opt/homebrew", Owner{
@@ -309,11 +326,20 @@ func build(id, name, why, regen string, acts ...Action) Owner {
 func artifacts() []artifact {
 	return []artifact{
 		{
-			match: func(n, p *walk.Node) bool {
-				return n.Name == "target" && (p.Has(walk.MarkCargo) || n.Has(walk.MarkCacheDirTag))
-			},
+			match: func(n, p *walk.Node) bool { return n.Name == "target" && p.Has(walk.MarkCargo) },
 			owner: build("cargo-target", "Cargo target/", "Compiled Rust: every profile, every dependency, incremental caches.", "Rebuilt by the next `cargo build`.",
-				Action{Label: "cargo clean", Cmd: []string{"cargo", "clean"}, Dir: "{parent}", Safety: Safe, Needs: "cargo"}),
+				Action{Label: "cargo clean", Cmd: []string{"cargo", "clean", "--manifest-path", "{parent}/Cargo.toml", "--target-dir", "{path}"}, Safety: Safe, Needs: "cargo"}),
+		},
+		{
+			// Cargo tags its target dir, but with no Cargo.toml next to it
+			// (a custom target-dir, a workspace member) `cargo clean` could
+			// clean some other project; only offer the Trash.
+			match: func(n, _ *walk.Node) bool { return n.Name == "target" && n.Has(walk.MarkCacheDirTag) },
+			owner: build("cargo-target", "Cargo target/", "Compiled Rust: every profile, every dependency, incremental caches.", "Rebuilt by the next `cargo build`."),
+		},
+		{
+			match: func(n, p *walk.Node) bool { return (n.Name == "deps" || n.Name == "_build") && p.Has(walk.MarkMix) },
+			owner: build("mix", "Mix deps and _build", "Elixir dependencies and compiled output.", "Fetched and compiled again by `mix deps.get` and `mix compile`."),
 		},
 		{
 			match: named("node_modules"),
@@ -328,7 +354,7 @@ func artifacts() []artifact {
 			owner: build("venv", "Python virtualenv", "A virtual environment with this project's installed packages.", "Recreated by `uv sync`, `poetry install` or `pip install -r`."),
 		},
 		{
-			match: named(".gradle", ".terraform", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".nox", ".zig-cache", "zig-cache", "zig-out", ".stack-work", "_build", "deps", ".dart_tool", ".build", "DerivedData", ".cache", ".wrangler"),
+			match: named(".gradle", ".terraform", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".nox", ".zig-cache", "zig-cache", "zig-out", ".stack-work", ".dart_tool", ".build", "DerivedData", ".cache", ".wrangler"),
 			owner: build("tool-cache", "tool cache", "A build or test tool's cache for this project.", "Recreated by the tool on its next run."),
 		},
 		{

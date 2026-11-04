@@ -41,8 +41,8 @@ func report() *owner.Report {
 		Actions: []owner.Action{{Label: "fstrim", Cmd: []string{"true"}}}}
 	cache := &owner.Owner{ID: "c", Name: "Spotify cache", Kind: owner.KindCache, Why: "a cache"}
 	items := []*owner.Item{
-		{Owner: vm, Path: "/h/vm", Size: 80 * gib},
-		{Owner: cache, Path: "/h/c", Size: 2 * gib},
+		{Owner: vm, Path: "/h/vm", Size: 80 * gib, Node: &walk.Node{Name: "/h/vm", Size: 80 * gib}},
+		{Owner: cache, Path: "/h/c", Size: 2 * gib, Node: &walk.Node{Name: "/h/c", Size: 2 * gib}},
 	}
 	return &owner.Report{Items: items, Total: 82 * gib}
 }

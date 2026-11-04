@@ -30,6 +30,16 @@ func Explain(path string) (o *Owner, claimed string, project string) {
 		rel := Tilde(dir)
 		n := &walk.Node{Name: filepath.Base(dir), Markers: walk.MarkersOf(dir)}
 		if found := c.match(cand{Path: dir, Rel: rel, Node: n}); found != nil {
+			if found.Kind == KindUser {
+				// A checkout inside your own folders is a project, as in
+				// Classify.
+				for j := i + 1; j < len(chain) && j <= i+5; j++ {
+					if walk.MarkersOf(chain[j])&walk.MarkGit != 0 {
+						return explainProject(chain[j:])
+					}
+				}
+				return found, dir, ""
+			}
 			if !anchorOnPath(anc, rel, target) {
 				return found, dir, ""
 			}
@@ -63,7 +73,7 @@ func anchorOnPath(anchors []string, rel, target string) bool {
 func explainProject(chain []string) (*Owner, string, string) {
 	proj := chain[0]
 	arts := artifacts()
-	for i := 1; i < len(chain); i++ {
+	for i := 1; i < len(chain) && i <= 9; i++ { // projectParts looks 9 levels down
 		dir, parent := chain[i], chain[i-1]
 		n := &walk.Node{Name: filepath.Base(dir), Markers: walk.MarkersOf(dir)}
 		if n.Has(walk.MarkGit) {

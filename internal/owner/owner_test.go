@@ -185,3 +185,53 @@ func TestTilde(t *testing.T) {
 		t.Error("tilde round trip")
 	}
 }
+
+func TestClassifyReviewCases(t *testing.T) {
+	SetHome("/home/u")
+	h := tree("/home/u", map[string]int64{
+		"Library/Developer/Toolchains":        4 * gib,
+		"Library/Developer/Xcode/DerivedData": 2 * gib,
+		"Library/Developer/Xcode/UserData":    3 * gib,
+		"Documents/code/app/.git":             gib / 100,
+		"Documents/code/app/node_modules/x":   gib,
+		"Documents/notes":                     gib,
+		".lima/_config":                       gib / 10,
+		".lima/default":                       5 * gib,
+		"vendored/.git":                       gib / 100,
+		"vendored/deps/redis":                 gib,
+		"scattered/a":                         1 << 20,
+	}, map[string]walk.Marker{
+		"Documents/code/app": walk.MarkGit | walk.MarkPackageJSON,
+		"vendored":           walk.MarkGit,
+	})
+	rep := Classify([]*walk.Node{h}, Options{})
+	var sum int64
+	for _, it := range rep.Items {
+		sum += it.Size
+		if it.Owner.Kind == KindUnclaimed && it.Path == "/home/u" && len(it.Owner.Actions) > 0 {
+			t.Errorf("%s (%s) must offer no action", it.Name(), it.Path)
+		}
+	}
+	if sum != rep.Total {
+		t.Fatalf("sum %d != total %d", sum, rep.Total)
+	}
+	lib := find(t, rep, "/home/u/Library")
+	if lib.Owner.ID != "library" || lib.Size != 7*gib {
+		t.Errorf("Library (other) = %s %d, want the 7 GiB no specific rule took", lib.Owner.ID, lib.Size)
+	}
+	app := find(t, rep, "/home/u/Documents/code/app")
+	if app.Owner.Kind != KindProject || app.Reclaimable() != gib {
+		t.Errorf("project in Documents = %v %d", app.Owner.Kind, app.Reclaimable())
+	}
+	if docs := find(t, rep, "/home/u/Documents"); docs.Size != gib {
+		t.Errorf("Documents = %d, want only the notes", docs.Size)
+	}
+	for _, it := range rep.Items {
+		if it.Owner.ID == "lima:_config" {
+			t.Error("~/.lima/_config is not a VM")
+		}
+	}
+	if v := find(t, rep, "/home/u/vendored"); len(v.Parts) != 0 {
+		t.Errorf("vendored deps/ without mix.exs is not a build output: %v", v.Parts)
+	}
+}

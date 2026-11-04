@@ -244,7 +244,7 @@ func (a *app) ls(ctx context.Context, out, errOut io.Writer) error {
 		}
 		fmt.Fprintf(tw, "\n%s\t%7s\t\t\t\n", k, format.Bytes(rep.KindTotal(k)))
 		for _, it := range items {
-			if it.Size < minSize {
+			if it.Size < minSize && (it.Node == nil || !it.Node.Denied) {
 				continue
 			}
 			delta := ""
@@ -254,6 +254,9 @@ func (a *app) ls(ctx context.Context, out, errOut io.Writer) error {
 			extra := ""
 			if r := it.Reclaimable(); r > 0 {
 				extra = format.Bytes(r) + " build output"
+			}
+			if it.Node != nil && it.Node.Denied {
+				extra = "unreadable (give the terminal Full Disk Access)"
 			}
 			fmt.Fprintf(tw, "  %s\t%7s\t%s\t%s\t\n", it.Name(), format.Bytes(it.Size), delta, extra)
 		}
@@ -277,6 +280,9 @@ func (a *app) why(ctx context.Context, path string, out io.Writer) error {
 		return err
 	}
 	o, claimed, project := owner.Explain(abs)
+	if fi, err := os.Stat(claimed); err == nil && !fi.IsDir() {
+		claimed = filepath.Dir(claimed) // a file: measure the directory it is in
+	}
 	nodes := walk.Walk(ctx, []string{claimed}, walk.Options{MinKeep: 1 << 20}, nil)
 	if err := ctx.Err(); err != nil {
 		return err
@@ -286,6 +292,13 @@ func (a *app) why(ctx context.Context, path string, out io.Writer) error {
 	}
 	n := nodes[0]
 	target := &owner.Item{Owner: o, Path: claimed, Node: n, Size: n.Size, Logical: n.Logical, Files: n.Files}
+	// Classify what was walked, so the size leaves out what other rules or
+	// nested projects claim inside it, the same as `chonk ls`.
+	for _, it := range owner.Classify(nodes, owner.Options{}).Items {
+		if it.Path == claimed && it.Owner.ID == o.ID {
+			target.Size, target.Parts = it.Size, it.Parts
+		}
+	}
 	if n.Touched > 0 {
 		target.Touched = time.Unix(n.Touched, 0)
 	}

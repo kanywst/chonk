@@ -164,10 +164,10 @@ func dockerDesktop(ctx context.Context, in *Inspector, it *owner.Item) Report {
 	if alloc, logical, err := walk.Allocated(disk); err == nil {
 		r.add("VM disk", "%s on disk (%s maximum)", format.Bytes(alloc), format.Bytes(logical))
 	}
-	if df, err := in.run(ctx, nil, "docker", "system", "df", "--format", "{{json .}}"); err == nil {
+	if df, err := in.run(ctx, owner.DockerDesktopEnv, "docker", "system", "df", "--format", "{{json .}}"); err == nil {
 		r.Lines = append(r.Lines, dockerDF(df)...)
 	} else {
-		r.Note = "Docker is not running, so chonk cannot see inside the VM."
+		r.Note = "Docker Desktop is not running, so chonk cannot see inside the VM."
 	}
 	return r
 }

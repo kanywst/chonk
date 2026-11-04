@@ -66,6 +66,7 @@ type classifier struct {
 	opt       Options
 	items     []*Item
 	small     map[string]int64
+	root      string // the scan root being classified, as rel
 }
 
 // Classify assigns every byte under roots to an owner.
@@ -78,8 +79,9 @@ func Classify(roots []*walk.Node, opt Options) *Report {
 	rep := &Report{Roots: roots}
 	for _, r := range roots {
 		rep.Total += r.Size
-		if c.visit(r, Tilde(r.Name)) == 0 {
-			c.unclaimed(r, Tilde(r.Name))
+		c.root = r.Name
+		if c.visit(r, Tilde(r.Name), false) == 0 {
+			c.unclaimed(r)
 		}
 	}
 	for root, n := range c.small {
@@ -89,7 +91,8 @@ func Classify(roots []*walk.Node, opt Options) *Report {
 		o := unclaimedOwner
 		o.Name = "small files"
 		o.Why = "Unclaimed directories too small to list one by one, added up."
-		c.items = append(c.items, &Item{Owner: &o, Path: Untilde(root), Size: n, Hotspot: ""})
+		o.Actions = nil // they are scattered; there is nothing to act on as one
+		c.items = append(c.items, &Item{Owner: &o, Path: root, Size: n})
 	}
 	slices.SortStableFunc(c.items, func(a, b *Item) int { return cmpSize(a.Size, b.Size) })
 	rep.Items = c.items
@@ -148,29 +151,29 @@ func unix(s int64) time.Time {
 
 // visit classifies n and returns how many of its bytes some owner claimed.
 // When it returns 0 the caller decides how to report n as unclaimed, so an
-// unclaimed region is listed once, at its top.
-func (c *classifier) visit(n *walk.Node, rel string) int64 {
+// unclaimed region is listed once, at its top. Inside a broad claim
+// (inBroad), whatever no specific rule takes stays with the broad owner, so
+// visit only reports what was taken.
+func (c *classifier) visit(n *walk.Node, rel string, inBroad bool) int64 {
 	cd := cand{Path: n.Path(), Rel: rel, Node: n}
 	if o := c.match(cd); o != nil {
-		if !c.deeper(rel) {
-			c.items = append(c.items, newItem(o, n))
-			return n.Size
-		}
-		// A broad rule (~/Library, an app's support directory) claims n, but
-		// a more specific rule names something inside it: let that one have
-		// its part, and keep the rest.
 		it := newItem(o, n)
 		c.items = append(c.items, it)
-		for _, ch := range n.Children {
-			crel := rel + "/" + ch.Name
-			if !c.onAnchorPath(crel) {
-				continue
+		switch {
+		case o.Kind == KindUser:
+			// Your own folders often hold git checkouts; those are
+			// projects, with build outputs of their own.
+			it.Size -= c.findProjects(n, rel, 0)
+		case c.deeper(rel):
+			// A broad rule (~/Library, an app's support directory) claims n,
+			// but a more specific rule names something inside it: let that
+			// one have its part, and keep the rest.
+			for _, ch := range n.Children {
+				crel := rel + "/" + ch.Name
+				if c.onAnchorPath(crel) {
+					it.Size -= c.visit(ch, crel, true)
+				}
 			}
-			got := c.visit(ch, crel)
-			if got == 0 {
-				continue // stays with the broad owner
-			}
-			it.Size -= got
 		}
 		return n.Size
 	}
@@ -181,15 +184,15 @@ func (c *classifier) visit(n *walk.Node, rel string) int64 {
 	var claimed int64
 	results := make([]int64, len(n.Children))
 	for i, ch := range n.Children {
-		results[i] = c.visit(ch, rel+"/"+ch.Name)
+		results[i] = c.visit(ch, rel+"/"+ch.Name, inBroad)
 		claimed += results[i]
 	}
-	if claimed == 0 {
-		return 0
+	if claimed == 0 || inBroad {
+		return claimed
 	}
 	for i, ch := range n.Children {
 		if results[i] == 0 {
-			c.unclaimed(ch, rel+"/"+ch.Name)
+			c.unclaimed(ch)
 		}
 	}
 	// What is left: files directly in n, and children too small to keep.
@@ -197,8 +200,23 @@ func (c *classifier) visit(n *walk.Node, rel string) int64 {
 	for _, ch := range n.Children {
 		rest -= ch.Size
 	}
-	c.small[c.rootOf(rel)] += rest
+	c.small[c.root] += rest
 	return n.Size
+}
+
+// findProjects claims the git working trees a few levels under n.
+func (c *classifier) findProjects(n *walk.Node, rel string, depth int) int64 {
+	var claimed int64
+	for _, ch := range n.Children {
+		crel := rel + "/" + ch.Name
+		switch {
+		case ch.Has(walk.MarkGit):
+			claimed += c.project(ch, crel)
+		case depth < 4:
+			claimed += c.findProjects(ch, crel, depth+1)
+		}
+	}
+	return claimed
 }
 
 func (c *classifier) onAnchorPath(rel string) bool {
@@ -216,29 +234,29 @@ func isProjectPlace(rel string) bool {
 	return strings.HasPrefix(rel, "~/") && !strings.HasPrefix(rel, "~/Library/")
 }
 
-func (c *classifier) rootOf(rel string) string {
-	if strings.HasPrefix(rel, "~") {
-		return "~"
-	}
-	if i := strings.IndexByte(rel[1:], '/'); i >= 0 {
-		return rel[:i+1]
-	}
-	return rel
-}
-
 // unclaimed lists n as unclaimed, or adds it to the small-files total.
-func (c *classifier) unclaimed(n *walk.Node, rel string) {
-	if n.Size < c.opt.MinItem {
-		c.small[c.rootOf(rel)] += n.Size
+func (c *classifier) unclaimed(n *walk.Node) {
+	if n.Skipped {
 		return
 	}
 	o := unclaimedOwner
+	if n.Denied {
+		// Its size is unknown, so it is listed however small it looks.
+		o.Why = "chonk could not read this directory, so its size is unknown. On macOS, give your terminal Full Disk Access to see inside."
+		o.Actions = nil
+		c.items = append(c.items, newItem(&o, n))
+		return
+	}
+	if n.Size < c.opt.MinItem {
+		c.small[c.root] += n.Size
+		return
+	}
 	it := newItem(&o, n)
 	if h := hotspot(n); h != n {
 		it.Hotspot = h.Path()
 	}
-	if n.Denied {
-		o.Why = "chonk could not read this directory, so its size is unknown."
+	if n.Parent == nil {
+		o.Actions = nil // never offer to trash a whole scan root
 	}
 	c.items = append(c.items, it)
 }

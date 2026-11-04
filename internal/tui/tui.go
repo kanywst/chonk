@@ -200,7 +200,8 @@ func (m model) scanCmd() tea.Cmd {
 
 func (m model) inspectCmd(it *owner.Item) tea.Cmd {
 	b, ctx := m.b, m.ctx
-	return func() tea.Msg { return inspectedMsg{path: it.Path, rpt: b.Inspect(ctx, it)} }
+	cp := *it // the view may update sizes while this runs
+	return func() tea.Msg { return inspectedMsg{path: cp.Path, rpt: b.Inspect(ctx, &cp)} }
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -424,6 +425,11 @@ func (m *model) applyReclaim(r reclaimedMsg) {
 	if it == nil {
 		return
 	}
+	if it.Node == nil {
+		// Not a directory chonk walked (a summed bucket): measuring its path
+		// again would count something else.
+		return
+	}
 	gone := r.node == nil
 	var size int64
 	if !gone {
@@ -496,7 +502,7 @@ func (m *model) rebuild() {
 		items := m.rep.ByKind(k)
 		var keep []*owner.Item
 		for _, it := range items {
-			if it.Size < 1<<20 {
+			if it.Size < 1<<20 && (it.Node == nil || !it.Node.Denied) {
 				continue
 			}
 			if f != "" && !strings.Contains(strings.ToLower(it.Name()+" "+it.Path), f) {
@@ -512,7 +518,7 @@ func (m *model) rebuild() {
 			m.rows = append(m.rows, row{kind: k, item: it})
 		}
 	}
-	m.cursor = 0
+	m.cursor, m.offset = 0, 0
 	for i, r := range m.rows {
 		if r.item != nil && r.item == cur {
 			m.cursor = i
