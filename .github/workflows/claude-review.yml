@@ -1,0 +1,98 @@
+name: Claude review
+
+# CI answers "does it build, lint and pass its tests". This asks what no
+# script here can. It reviews, it does not gate: nothing here is a required
+# check.
+#
+# The action refuses to run when this file differs from the copy on the
+# default branch, so a pull request cannot rewrite its own reviewer. The cost
+# is that any change to this file, including the one that added it, goes
+# unreviewed by Claude until it is merged.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+# One review per pull request. A rapid re-push cancels the run it superseded.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Forks get no secrets, and Dependabot's runs read a different secret
+    # store with a read-only token, so both would fail on authentication
+    # rather than say anything useful. Drafts wait until they are ready.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      # Required by the action's default GitHub App authentication.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      # Without the secret the action exits successfully having reviewed
+      # nothing, so the check goes green and the pull request looks reviewed.
+      # Fail here instead, where the reason is legible.
+      - name: Require the token
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            echo "::error::CLAUDE_CODE_OAUTH_TOKEN is not set. Generate one with 'claude setup-token', then: gh secret set CLAUDE_CODE_OAUTH_TOKEN"
+            exit 1
+          fi
+
+      - uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR: ${{ github.event.pull_request.number }}
+
+            chonk is a disk-usage TUI and CLI. It walks the disk by allocated
+            blocks, gives every byte to an owner through the rules in
+            internal/owner/rules.go, and reclaims space by running each owner's
+            own command (or moving to the Trash) after a `y` confirmation. Read
+            DESIGN.md for the model.
+
+            Do not repeat what CI already does: builds for four targets, go vet,
+            golangci-lint, go test -race, govulncheck, goreleaser check and
+            markdownlint run on this PR.
+
+            Look for what only a reader can catch:
+
+            1. Anything that could run a reclaim action on the wrong path, on
+               a scan root or the home directory, against the wrong container
+               engine (every docker action must pin DOCKER_HOST), or without
+               the confirmation. This is the one class of bug that destroys
+               data.
+            2. Byte accounting: Classify must count each byte exactly once
+               (items add up to the total), and Explain (chonk why) must agree
+               with Classify for the same path.
+            3. Rules that claim too much or say something untrue: a Why or
+               Regen that misstates what removing it costs, a Safety level
+               too low for what is lost, an action that is not the owner's
+               own way to reclaim.
+            4. Commands built from anything found on disk rather than fixed in
+               the rules.
+            5. Bubble Tea state bugs: value receivers that drop updates,
+               goroutines reading items the view mutates.
+
+            Post findings as inline comments on the lines they concern, and
+            one top-level comment for the summary. Cite `file:line`. If the
+            diff is clean against all of the above, say so in one line rather
+            than manufacturing nits.
+
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"

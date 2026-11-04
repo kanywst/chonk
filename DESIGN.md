@@ -83,8 +83,23 @@ chonk version
 
 The TUI has two levels: owners grouped by kind, and a drill-down (`enter`) into an item's directory tree with the inspector's report on top. `x` opens the reclaim menu for the item under the cursor.
 
+### Processes
+
+Owners also run things. `ps` gives every process's executable and memory, and one `lsof -d cwd` call gives working directories. A process belongs to the owner that names it (a VM's host agent, `nix-daemon`), else to the deepest item its executable is under, else to the deepest item its working directory is under. A Virtualization.framework guest runs in an XPC service whose parent is launchd, so it goes to the VM whose host agent started just before it. The confirmation dialog warns when processes run from what an action removes.
+
+### Outside the scan
+
+Two things no directory shows:
+
+- **APFS local snapshots** (Time Machine) keep every block deleted after they were taken. They are listed as one item of unknown size; thinning them is an action, and the ledger then records what came back.
+- **The rest of the volume**: statfs's used bytes minus what the walk counted is swap, logs, other users and `/Library`, shown in the header so the scan's total is not mistaken for the disk's.
+
+### Speed
+
+On macOS directories are read with `getattrlistbulk(2)`, which returns names and allocated sizes for a batch of entries in one call, with pooled buffers and two workers per CPU. A 3M-file home takes about 30 s, against 38 s for ReadDir plus lstat; the rest is APFS metadata I/O, which more workers only contend on.
+
 ## Not now
 
-- Process, memory and port views joined to owners
-- APFS local snapshots (`tmutil listlocalsnapshots`) and purgeable space
+- Purgeable space (needs Foundation's volume capacity keys)
 - A launchd job that snapshots daily
+- Per-snapshot sizes, which APFS does not expose

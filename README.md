@@ -4,6 +4,8 @@
 
 See what is eating your disk, why it exists, and the right way to get it back.
 
+<img src="demo.gif" alt="chonk finding 77G trapped in a VM disk and getting it back" width="800">
+
 Disk viewers list directories. Cleaners delete a fixed list of caches. Neither tells you that the 81G file in `~/Library/Application Support/rancher-desktop` is a VM disk whose guest uses 3.6G, and that the other 77G comes back with one `fstrim`, not with `docker system prune`. chonk does:
 
 ```text
@@ -22,6 +24,8 @@ Disk viewers list directories. Cleaners delete a fixed list of caches. Neither t
 - **Says why each thing exists**, what removing it costs, and how safe that is (safe, careful, danger).
 - **Looks inside VMs** (Rancher Desktop, Docker Desktop, Podman machine) by asking the tool, and shows the space the guest freed but the host still holds.
 - **Reclaims with the owner's own command** (`cargo clean`, `go clean -cache`, `brew cleanup`, `fstrim` in the guest, `podman machine rm`), or moves things to the Trash. It measures free space before and after and reports what actually came back, and runs the trim itself after pruning inside a VM.
+- **Ties processes to what they own**: the VM's host agent and guest memory, the dev server running in a project. Before removing something, chonk warns when processes are running from it.
+- **Shows what no directory explains**: Time Machine local snapshots (which keep deleted files' blocks alive), and how much of the volume lies outside the scan (swap, logs, other users).
 - **Remembers past scans**, so you can see what grew since last week.
 
 ## Install
@@ -29,6 +33,8 @@ Disk viewers list directories. Cleaners delete a fixed list of caches. Neither t
 ```sh
 go install github.com/kanywst/chonk/cmd/chonk@latest
 ```
+
+On macOS, give your terminal Full Disk Access (System Settings, Privacy & Security) so chonk can measure Mail, Messages and other protected folders; without it they are listed as locked rather than counted as empty.
 
 ## Use
 
@@ -52,6 +58,8 @@ chonk diff            # what grew or shrank since the previous scan
 | `esc` | back |
 | `q` | quit |
 
+A full scan of a home with three million files takes about 30 seconds on an M-series Mac; on macOS chonk reads directories with `getattrlistbulk`, one call per batch of entries instead of one per file.
+
 chonk looks under your home, `/Applications`, `/opt/homebrew`, `/usr/local` and `/nix`. It skips iCloud and file-provider folders, which mostly hold placeholders for files that live elsewhere. Scan history and the reclaim ledger are in `$XDG_STATE_HOME/chonk` (default `~/.local/state/chonk`). `NO_COLOR` is respected.
 
 ## Safety
@@ -66,7 +74,10 @@ chonk looks under your home, `/Applications`, `/opt/homebrew`, `/usr/local` and 
 make test       # go test -race ./...
 make lint       # golangci-lint run
 make vulncheck  # go tool govulncheck ./...
+CHONK_DEMO=1 go run ./cmd/chonk   # the canned machine the demo is recorded on
 ```
+
+CI builds for macOS and Linux on amd64 and arm64, runs the tests with the race detector on both, lints Go and Markdown, checks the release config and known vulnerabilities, and re-records `demo.gif` when the view changes. Pull requests get a review from Claude (`.github/workflows/claude-review.yml`), which needs a `CLAUDE_CODE_OAUTH_TOKEN` secret.
 
 [DESIGN.md](DESIGN.md) explains the model and what was learned from kanywst/sweep.
 
