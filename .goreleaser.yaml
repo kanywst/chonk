@@ -1,0 +1,87 @@
+version: 2
+
+project_name: chonk
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - binary: chonk
+    main: ./cmd/chonk
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    # chonk measures allocated blocks with stat and statfs: Unix only.
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/kanywst/chonk/internal/version.Version={{.Version}} -X github.com/kanywst/chonk/internal/version.GitCommit={{.ShortCommit}}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "{{ .ProjectName }}-{{ .Version }}-checksums.txt"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^chore"
+      - "^ci"
+      - "^docs"
+      - "^test"
+
+release:
+  prerelease: auto
+  replace_existing_artifacts: true
+
+sboms:
+  - artifacts: archive
+
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args: ["sign-blob", "--bundle=${signature}", "${artifact}", "--yes"]
+    artifacts: checksum
+    output: true
+
+homebrew_casks:
+  - name: chonk
+    binaries: [chonk]
+    # A v1.2.3-rc1 tag is a prerelease; keep it out of the tap.
+    skip_upload: auto
+    # Casks are downloaded with curl, so the binary carries com.apple.quarantine
+    # and Gatekeeper refuses to run it unsigned. Same step as y509.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{" }}staged_path{{ "}}" }}/chonk"]
+        end
+      end
+    homepage: "https://github.com/kanywst/chonk"
+    description: "See what is eating your disk, why it exists, and the right way to get it back"
+    repository:
+      owner: kanywst
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "chore(cask): {{ .ProjectName }} {{ .Tag }}"
+
+nfpms:
+  - maintainer: kanywst
+    description: See what is eating your disk, why it exists, and the right way to get it back
+    homepage: https://github.com/kanywst/chonk
+    license: Apache-2.0
+    formats: [deb, rpm]
