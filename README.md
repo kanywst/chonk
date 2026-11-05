@@ -51,7 +51,10 @@ chonk                 # interactive view
 chonk ls              # everything, grouped by owner (--json, --all)
 chonk why PATH        # who owns PATH, why it exists, how to reclaim it
 chonk diff            # what grew or shrank since the previous scan
+chonk schedule on     # record a snapshot every day (macOS, launchd; --hour N)
 ```
+
+`chonk diff` compares against the newest scan that is at least a day old. `chonk schedule on` installs a launchd agent (`~/Library/LaunchAgents/io.github.kanywst.chonk.snapshot.plist`) that runs `chonk snapshot` once a day at low I/O priority, so there is always a baseline; `chonk schedule off` removes it. The job is the chonk binary itself, not your terminal, so it needs Full Disk Access of its own to count protected folders. On Linux, run `chonk snapshot` from cron or a systemd timer.
 
 `chonk why` does not scan the whole disk: it asks the rules about each directory from the top down to PATH and measures only what the owner claims, so it answers in a second.
 

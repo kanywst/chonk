@@ -61,7 +61,7 @@ func (m model) header() string {
 		}
 	}
 	if m.hasBase {
-		d := format.Delta(m.rep.Total - m.base.Total)
+		d := format.Delta(m.rep.Total - m.base.Total - m.baseAdj)
 		if d == "" {
 			d = "no change"
 		}
@@ -192,8 +192,8 @@ func (m model) itemLine(it *owner.Item, cur bool, biggest int64, w int) string {
 	bar := m.bar(it.Owner.Kind, it.Size, biggest, barW)
 
 	var tags []string
-	if m.hasBase {
-		if d := format.Delta(it.Size - m.base.Items[owner.Tilde(it.Path)]); d != "" {
+	if k := owner.Tilde(it.Path); m.hasBase && !m.skip[k] {
+		if d := format.Delta(it.Size - m.base.Items[k]); d != "" {
 			if strings.HasPrefix(d, "+") {
 				tags = append(tags, st.warn.Render(d))
 			} else {

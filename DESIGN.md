@@ -71,6 +71,10 @@ An action is a command (`go clean -cache`, `rdctl shell sudo fstrim -av`, `podma
 
 Every full scan writes owner totals to `$XDG_STATE_HOME/chonk/snapshots.jsonl`. The TUI shows the change against the newest snapshot that is at least a day old, so "what grew since last week" is one glance.
 
+A history only exists if someone scans, so `chonk schedule on` writes a launchd agent that runs `chonk snapshot` daily (`StartCalendarInterval`, which launchd also fires on wake when the Mac slept through the hour) as a `Background` process with `LowPriorityIO`. The plist points at the path chonk was run from, not its symlink target, so Homebrew's `bin/chonk` keeps working across upgrades; a `go run` build is refused. `XDG_STATE_HOME` is copied into the job, made absolute, so it writes the history the user reads.
+
+The job is the chonk binary, not the terminal, so unless it has Full Disk Access of its own it cannot read Mail, Messages and the like. Each snapshot lists the items with an unreadable directory inside (`partial`), and a diff leaves out the items that one scan read in full and the other did not, so a permission is not reported as the disk shrinking or growing.
+
 ## Interface
 
 ```text
@@ -78,6 +82,8 @@ chonk              interactive view
 chonk ls           owners, biggest first (--json, --all for small ones)
 chonk why PATH     which owner claims PATH, why it exists, how to reclaim it
 chonk diff         change since the previous snapshot
+chonk snapshot     scan and record, one line of output (what the daily job runs)
+chonk schedule on  install the daily launchd job (off removes it; no argument shows the status)
 chonk version
 ```
 
@@ -101,5 +107,4 @@ On macOS directories are read with `getattrlistbulk(2)`, which returns names and
 ## Not now
 
 - Purgeable space (needs Foundation's volume capacity keys)
-- A launchd job that snapshots daily
 - Per-snapshot sizes, which APFS does not expose

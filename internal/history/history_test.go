@@ -2,6 +2,7 @@ package history
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -39,5 +40,45 @@ func TestStoreBaselineDiff(t *testing.T) {
 	ch := Diff(base, snaps[1])
 	if len(ch) != 3 || ch[0].Key != "~/new" || ch[0].Delta() != 7<<20 {
 		t.Fatalf("diff = %+v", ch)
+	}
+}
+
+func TestAddConcurrent(t *testing.T) {
+	s := Store{Path: filepath.Join(t.TempDir(), "snapshots.jsonl")}
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Go(func() {
+			if err := s.Add(Snapshot{Total: int64(i), Items: map[string]int64{"~/a": int64(i)}}, 0); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if snaps, err := s.Load(); err != nil || len(snaps) != 20 {
+		t.Errorf("kept %d of 20: %v", len(snaps), err)
+	}
+}
+
+func TestPartial(t *testing.T) {
+	// The terminal read ~/Library in full; the daily job, without Full Disk
+	// Access, could not read Mail inside it.
+	full := Snapshot{Total: 100, Items: map[string]int64{"~/Library": 60, "~/go": 40}}
+	job := Snapshot{Total: 75, Items: map[string]int64{"~/Library": 30, "~/go": 45}, Partial: []string{"~/Library"}}
+	if m := Mismatched(full, job); len(m) != 1 || !m["~/Library"] {
+		t.Errorf("mismatched = %v", m)
+	}
+	if ch := Diff(full, job); len(ch) != 1 || ch[0].Key != "~/go" {
+		t.Errorf("diff = %+v", ch)
+	}
+	if d := TotalDelta(full, job); d != 5 {
+		t.Errorf("total delta = %d, want 5 (only ~/go grew)", d)
+	}
+	// Two scans that both could not read it are compared as they are.
+	job2 := Snapshot{Total: 80, Items: map[string]int64{"~/Library": 35, "~/go": 45}, Partial: []string{"~/Library"}}
+	if m := Mismatched(job, job2); len(m) != 0 {
+		t.Errorf("both partial: %v", m)
+	}
+	if d := TotalDelta(job, job2); d != 5 {
+		t.Errorf("total delta = %d", d)
 	}
 }

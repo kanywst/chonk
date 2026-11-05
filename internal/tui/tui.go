@@ -105,9 +105,11 @@ const (
 type (
 	progressMsg struct{}
 	scanDoneMsg struct {
-		rep  *owner.Report
-		base history.Snapshot
-		has  bool
+		rep   *owner.Report
+		base  history.Snapshot
+		has   bool
+		skip  map[string]bool // see history.Mismatched
+		delta int64           // history.TotalDelta
 	}
 	procsMsg     struct{ procs []procs.Proc }
 	inspectedMsg struct {
@@ -145,6 +147,8 @@ type model struct {
 	rep     *owner.Report
 	base    history.Snapshot
 	hasBase bool
+	skip    map[string]bool // items whose change is a permission, not the disk
+	baseAdj int64           // the part of the total's change those items make up
 	vol     system.Volume
 	procsOf map[*owner.Item][]procs.Proc
 
@@ -204,7 +208,7 @@ func (m model) scanCmd() tea.Cmd {
 		if !cfg.NoSave && ctx.Err() == nil && cfg.Store.Path != "" {
 			_ = cfg.Store.Add(snap, 400)
 		}
-		return scanDoneMsg{rep: rep, base: base, has: has}
+		return scanDoneMsg{rep: rep, base: base, has: has, skip: history.Mismatched(base, snap), delta: history.TotalDelta(base, snap)}
 	}
 }
 
@@ -234,6 +238,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case scanDoneMsg:
 		m.rep, m.base, m.hasBase = msg.rep, msg.base, msg.has
+		m.skip, m.baseAdj = msg.skip, (msg.rep.Total-msg.base.Total)-msg.delta
 		m.vol = m.b.Volume()
 		m.screen = screenList
 		m.rebuild()
