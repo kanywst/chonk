@@ -70,6 +70,13 @@ func TestInstallRemove(t *testing.T) {
 		},
 	}
 	ctx := context.Background()
+	if runtime.GOOS == "darwin" {
+		rel := a
+		rel.XDG = "state"
+		if err := rel.Install(ctx); err == nil || !strings.Contains(err.Error(), "not an absolute path") {
+			t.Errorf("relative XDG_STATE_HOME: %v", err)
+		}
+	}
 	if runtime.GOOS != "darwin" {
 		if err := a.Install(ctx); !errors.Is(err, ErrUnsupported) {
 			t.Fatalf("Install off macOS = %v", err)

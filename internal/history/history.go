@@ -18,6 +18,9 @@ type Snapshot struct {
 	Time  time.Time        `json:"time"`
 	Total int64            `json:"total_bytes"`
 	Items map[string]int64 `json:"items"`
+	// Partial lists the items with a directory inside that the scan could
+	// not read (no Full Disk Access), so their size is a lower bound.
+	Partial []string `json:"partial,omitempty"`
 }
 
 // Store is a JSON-lines file of snapshots, oldest first.
@@ -115,16 +118,48 @@ type Change struct {
 // Delta is Now - Before.
 func (c Change) Delta() int64 { return c.Now - c.Before }
 
-// Diff lists every item whose size changed, largest change first.
+// Mismatched lists the items one scan could read in full and the other
+// could not, such as the daily job without Full Disk Access against a scan
+// from the terminal. Their change would be the permission, not the disk.
+func Mismatched(old, cur Snapshot) map[string]bool {
+	out := map[string]bool{}
+	for _, k := range old.Partial {
+		out[k] = true
+	}
+	for _, k := range cur.Partial {
+		if out[k] {
+			delete(out, k)
+		} else {
+			out[k] = true
+		}
+	}
+	return out
+}
+
+// TotalDelta is how much the total changed, leaving out Mismatched items.
+func TotalDelta(old, cur Snapshot) int64 {
+	d := cur.Total - old.Total
+	for k := range Mismatched(old, cur) {
+		d -= cur.Items[k] - old.Items[k]
+	}
+	return d
+}
+
+// Diff lists every item whose size changed, largest change first, leaving
+// out Mismatched items.
 func Diff(old, cur Snapshot) []Change {
 	var out []Change
+	skip := Mismatched(old, cur)
 	for k, v := range cur.Items {
+		if skip[k] {
+			continue
+		}
 		if o := old.Items[k]; o != v {
 			out = append(out, Change{Key: k, Before: o, Now: v})
 		}
 	}
 	for k, v := range old.Items {
-		if _, ok := cur.Items[k]; !ok {
+		if _, ok := cur.Items[k]; !ok && !skip[k] {
 			out = append(out, Change{Key: k, Before: v})
 		}
 	}

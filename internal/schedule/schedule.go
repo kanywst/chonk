@@ -104,6 +104,12 @@ func (a Agent) Install(ctx context.Context) error {
 	if err := CheckExe(a.Exe); err != nil {
 		return err
 	}
+	// launchd runs the job from /, where a relative path means something else.
+	for _, p := range []string{a.State, a.XDG} {
+		if p != "" && !filepath.IsAbs(p) {
+			return fmt.Errorf("%s is not an absolute path", p)
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(a.Path()), 0o700); err != nil {
 		return err
 	}

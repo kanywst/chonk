@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/kanywst/chonk/internal/history"
@@ -46,12 +47,33 @@ func skip(path string) bool {
 // Snapshot is what history keeps of a report.
 func Snapshot(r *owner.Report, now time.Time) history.Snapshot {
 	s := history.Snapshot{Time: now, Total: r.Total, Items: map[string]int64{}}
+	partial := map[string]bool{}
 	for _, it := range r.Items {
-		if !it.SizeUnknown {
-			s.Items[owner.Tilde(it.Path)] += it.Size
+		if it.SizeUnknown {
+			continue
+		}
+		k := owner.Tilde(it.Path)
+		s.Items[k] += it.Size
+		if denied(it.Node) && !partial[k] {
+			partial[k] = true
+			s.Partial = append(s.Partial, k)
 		}
 	}
+	slices.Sort(s.Partial)
 	return s
+}
+
+// denied reports whether n or a directory under it could not be read.
+// Unreadable directories are kept in the tree whatever their size, so this
+// sees all of them.
+func denied(n *walk.Node) bool {
+	if n == nil {
+		return false
+	}
+	if n.Denied {
+		return true
+	}
+	return slices.ContainsFunc(n.Children, denied)
 }
 
 // Home is the user's home directory, and where ~ points in rules.

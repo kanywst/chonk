@@ -271,8 +271,9 @@ func (a *app) ls(ctx context.Context, out, errOut io.Writer) error {
 	}
 	fmt.Fprintln(out)
 	if hasBase {
-		fmt.Fprintf(out, "change since %s: %s\n", base.Time.Format("2006-01-02 15:04"), orZero(format.Delta(snap.Total-base.Total)))
+		fmt.Fprintf(out, "change since %s: %s\n", base.Time.Format("2006-01-02 15:04"), orZero(format.Delta(history.TotalDelta(base, snap))))
 	}
+	skip := history.Mismatched(base, snap)
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	for _, k := range rep.KindsBySize() {
 		items := rep.ByKind(k)
@@ -285,8 +286,8 @@ func (a *app) ls(ctx context.Context, out, errOut io.Writer) error {
 				continue
 			}
 			delta := ""
-			if hasBase {
-				delta = format.Delta(it.Size - base.Items[owner.Tilde(it.Path)])
+			if k := owner.Tilde(it.Path); hasBase && !skip[k] {
+				delta = format.Delta(it.Size - base.Items[k])
 			}
 			extra := ""
 			if r := it.Reclaimable(); r > 0 {
@@ -422,9 +423,12 @@ func (a *app) diff(ctx context.Context, out, errOut io.Writer) error {
 	base, _ := history.Baseline(past, snap.Time, 24*time.Hour)
 	changes := history.Diff(base, snap)
 	if a.f.json {
-		return writeJSON(out, map[string]any{"since": base.Time, "total_delta_bytes": snap.Total - base.Total, "changes": changes})
+		return writeJSON(out, map[string]any{"since": base.Time, "total_delta_bytes": history.TotalDelta(base, snap), "changes": changes})
 	}
-	fmt.Fprintf(out, "since %s (%s ago): %s\n\n", base.Time.Format("2006-01-02 15:04"), format.Age(snap.Time.Sub(base.Time)), orZero(format.Delta(snap.Total-base.Total)))
+	fmt.Fprintf(out, "since %s (%s ago): %s\n\n", base.Time.Format("2006-01-02 15:04"), format.Age(snap.Time.Sub(base.Time)), orZero(format.Delta(history.TotalDelta(base, snap))))
+	if n := len(history.Mismatched(base, snap)); n > 0 {
+		fmt.Fprintf(out, "%d items left out: one of the two scans could not read all of them (Full Disk Access)\n\n", n)
+	}
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	shown := 0
 	for _, c := range changes {
@@ -463,9 +467,20 @@ func (a *app) schedule(ctx context.Context, words []string, state string, out io
 	}
 	// Not resolved through symlinks: Homebrew's bin/chonk link survives an
 	// upgrade, the versioned path it points to does not.
+	// launchd runs the job from /, so a relative XDG_STATE_HOME would point
+	// somewhere else there.
+	if state, err = filepath.Abs(state); err != nil {
+		return err
+	}
+	xdg := os.Getenv("XDG_STATE_HOME")
+	if xdg != "" {
+		if xdg, err = filepath.Abs(xdg); err != nil {
+			return err
+		}
+	}
 	ag := schedule.Agent{
 		Home: a.home, State: state, Exe: exe, Hour: a.f.hour, UID: os.Getuid(),
-		XDG: os.Getenv("XDG_STATE_HOME"), Run: schedule.Runner(procs.Exec),
+		XDG: xdg, Run: schedule.Runner(procs.Exec),
 	}
 	cmd := ""
 	if len(words) > 0 {
