@@ -2,6 +2,7 @@ package history
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -39,6 +40,22 @@ func TestStoreBaselineDiff(t *testing.T) {
 	ch := Diff(base, snaps[1])
 	if len(ch) != 3 || ch[0].Key != "~/new" || ch[0].Delta() != 7<<20 {
 		t.Fatalf("diff = %+v", ch)
+	}
+}
+
+func TestAddConcurrent(t *testing.T) {
+	s := Store{Path: filepath.Join(t.TempDir(), "snapshots.jsonl")}
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Go(func() {
+			if err := s.Add(Snapshot{Total: int64(i), Items: map[string]int64{"~/a": int64(i)}}, 0); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if snaps, err := s.Load(); err != nil || len(snaps) != 20 {
+		t.Errorf("kept %d of 20: %v", len(snaps), err)
 	}
 }
 

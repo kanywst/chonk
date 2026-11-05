@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -57,8 +58,21 @@ func (s Store) Load() ([]Snapshot, error) {
 	return out, sc.Err()
 }
 
-// Add appends snap, keeping at most keep snapshots (0 keeps all).
+// Add appends snap, keeping at most keep snapshots (0 keeps all). The
+// daily job and an interactive scan can finish at the same time, so the
+// read, append and rewrite happen under an exclusive lock.
 func (s Store) Add(snap Snapshot, keep int) error {
+	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(s.Path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
 	all, err := s.Load()
 	if err != nil {
 		return err
@@ -67,14 +81,12 @@ func (s Store) Add(snap Snapshot, keep int) error {
 	if keep > 0 && len(all) > keep {
 		all = all[len(all)-keep:]
 	}
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
-		return err
-	}
-	tmp := s.Path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	f, err := os.CreateTemp(filepath.Dir(s.Path), filepath.Base(s.Path)+".*.tmp")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // a no-op once renamed
 	w := bufio.NewWriter(f)
 	for _, sn := range all {
 		b, err := json.Marshal(sn)
