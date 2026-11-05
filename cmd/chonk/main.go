@@ -28,6 +28,7 @@ import (
 	"github.com/kanywst/chonk/internal/procs"
 	"github.com/kanywst/chonk/internal/reclaim"
 	"github.com/kanywst/chonk/internal/scan"
+	"github.com/kanywst/chonk/internal/schedule"
 	"github.com/kanywst/chonk/internal/system"
 	"github.com/kanywst/chonk/internal/tui"
 	"github.com/kanywst/chonk/internal/version"
@@ -42,12 +43,16 @@ Usage:
   chonk ls           everything, grouped by who put it there, biggest first
   chonk why PATH     who owns PATH, why it exists, and how to reclaim it
   chonk diff         what grew or shrank since the previous scan
+  chonk snapshot     scan and record the totals, printing one line
+  chonk schedule on  record a snapshot every day (macOS launchd; also off,
+                     or no argument for the status)
   chonk version      print the version (also -v, --version)
 
 Flags:
   --json             print JSON (ls, why, diff)
   --all              ls: list items under 100M too
   --no-save          do not record this scan in the history
+  --hour N           schedule on: the local hour of the daily run (default 12)
 
 chonk looks under your home, /Applications, /opt/homebrew, /usr/local and
 /nix. Sizes are space on disk, so sparse VM images count for what they hold.
@@ -64,6 +69,7 @@ func main() {
 
 type flags struct {
 	json, all, noSave bool
+	hour              int
 }
 
 func run(ctx context.Context, args []string, out, errOut io.Writer) error {
@@ -73,6 +79,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	fs.BoolVar(&f.json, "json", false, "")
 	fs.BoolVar(&f.all, "all", false, "")
 	fs.BoolVar(&f.noSave, "no-save", false, "")
+	fs.IntVar(&f.hour, "hour", 12, "")
 	help := fs.Bool("h", false, "")
 	fs.BoolVar(help, "help", false, "")
 	ver := fs.Bool("v", false, "")
@@ -130,6 +137,13 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) error {
 		return app.why(ctx, words[1], out)
 	case "diff":
 		return app.diff(ctx, out, errOut)
+	case "snapshot":
+		return app.snapshot(ctx, out, errOut)
+	case "schedule":
+		if len(words) > 2 {
+			return errors.New("usage: chonk schedule [on|off]")
+		}
+		return app.schedule(ctx, words[1:], state, out)
 	case "version":
 		_, err := fmt.Fprintln(out, "chonk", version.String())
 		return err
@@ -425,4 +439,63 @@ func (a *app) diff(ctx context.Context, out, errOut io.Writer) error {
 		fmt.Fprintln(tw, "nothing changed by more than 1M")
 	}
 	return tw.Flush()
+}
+
+// snapshot is what the daily job runs: a full scan, recorded, and one line
+// for the log.
+func (a *app) snapshot(ctx context.Context, out, errOut io.Writer) error {
+	a.f.noSave = false
+	rep, snap, _ := a.scan(ctx, errOut)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(out, "%s recorded %s in %d items\n", snap.Time.Format(time.RFC3339), format.Bytes(snap.Total), len(rep.Items))
+	return err
+}
+
+func (a *app) schedule(ctx context.Context, words []string, state string, out io.Writer) error {
+	if a.f.hour < 0 || a.f.hour > 23 {
+		return fmt.Errorf("--hour %d: want 0-23", a.f.hour)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	// Not resolved through symlinks: Homebrew's bin/chonk link survives an
+	// upgrade, the versioned path it points to does not.
+	ag := schedule.Agent{
+		Home: a.home, State: state, Exe: exe, Hour: a.f.hour, UID: os.Getuid(),
+		XDG: os.Getenv("XDG_STATE_HOME"), Run: schedule.Runner(procs.Exec),
+	}
+	cmd := ""
+	if len(words) > 0 {
+		cmd = words[0]
+	}
+	switch cmd {
+	case "on":
+		if err := ag.Install(ctx); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(out, "chonk snapshot will run every day at %02d:00 (or when the Mac wakes, if it slept through it).\n  job: %s\n  log: %s\nTo measure protected folders, give %s Full Disk Access too; without it they are left out of the daily totals.\n", ag.Hour, owner.Tilde(ag.Path()), owner.Tilde(ag.Log()), exe)
+		return err
+	case "off":
+		if err := ag.Remove(ctx); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintln(out, "the daily snapshot is off")
+		return err
+	case "":
+		installed, loaded := ag.Status(ctx)
+		switch {
+		case installed && loaded:
+			_, err = fmt.Fprintf(out, "on: %s\nlog: %s\n", owner.Tilde(ag.Path()), owner.Tilde(ag.Log()))
+		case installed:
+			_, err = fmt.Fprintf(out, "installed but not loaded: %s (run `chonk schedule on` again)\n", owner.Tilde(ag.Path()))
+		default:
+			_, err = fmt.Fprintln(out, "off (turn it on with `chonk schedule on`)")
+		}
+		return err
+	default:
+		return fmt.Errorf("unknown schedule command %q; want on or off", cmd)
+	}
 }

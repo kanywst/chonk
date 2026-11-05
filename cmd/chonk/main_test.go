@@ -21,6 +21,9 @@ func TestRun(t *testing.T) {
 		{args: []string{"why"}, err: "usage: chonk why PATH"},
 		{args: []string{"--bogus"}, err: "flag provided but not defined"},
 		{args: []string{"why", "/does/not/exist"}, err: "no such file"},
+		{args: []string{"schedule", "maybe"}, err: `unknown schedule command "maybe"`},
+		{args: []string{"schedule", "on", "--hour", "24"}, err: "want 0-23"},
+		{args: []string{"schedule", "on", "off"}, err: "usage: chonk schedule"},
 	} {
 		var out bytes.Buffer
 		err := run(context.Background(), tc.args, &out, &bytes.Buffer{})
