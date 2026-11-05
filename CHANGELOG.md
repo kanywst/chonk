@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/kanywst/chonk/compare/v0.1.0...v0.2.0) (2026-11-05)
+
+
+### Features
+
+* record a snapshot every day via a launchd agent (schedule on) ([#3](https://github.com/kanywst/chonk/issues/3)) ([711923f](https://github.com/kanywst/chonk/commit/711923ffe590e266287116cb2d9c05fd96561018))
+
 ## 0.1.0 (2026-11-04)
 
 
