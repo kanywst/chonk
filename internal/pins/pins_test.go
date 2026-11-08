@@ -85,14 +85,14 @@ func TestVersion(t *testing.T) {
 
 func TestComparable(t *testing.T) {
 	for _, p := range []string{"22", "1.90.0", "stable", "nightly", "beta"} {
-		if !comparable(p) {
-			t.Errorf("%q should be comparable", p)
+		if !isVersion(p) {
+			t.Errorf("%q should be a comparable version", p)
 		}
 	}
 	// Aliases only the manager can resolve must stop the whole check.
 	for _, p := range []string{"lts/*", "node", "latest", "system", "", ">=20"} {
-		if comparable(p) {
-			t.Errorf("%q should not be comparable", p)
+		if isVersion(p) {
+			t.Errorf("%q should not be a comparable version", p)
 		}
 	}
 }

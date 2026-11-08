@@ -78,11 +78,11 @@ func apply(it *owner.Item, m manager, s Set) {
 	// that one unpinned would point at the version in use.
 	pins := s.Wanted[m.tool]
 	def := version(m.tool, s.Default[m.tool])
-	if def != "" && !comparable(def) {
+	if def != "" && !isVersion(def) {
 		return
 	}
 	for _, p := range pins {
-		if !comparable(p) {
+		if !isVersion(p) {
 			return
 		}
 	}
@@ -154,9 +154,9 @@ func version(tool, name string) string {
 	return name
 }
 
-// comparable reports whether a pin is a version chonk can compare, rather
+// isVersion reports whether a pin is a version chonk can compare, rather
 // than an alias whose meaning only its manager knows.
-func comparable(pin string) bool {
+func isVersion(pin string) bool {
 	if pin == "" {
 		return false
 	}

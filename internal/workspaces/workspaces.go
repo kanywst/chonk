@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -43,14 +44,7 @@ func Apply(rep *owner.Report) {
 	}
 }
 
-func isEditor(name string) bool {
-	for _, e := range editors {
-		if name == e {
-			return true
-		}
-	}
-	return false
-}
+func isEditor(name string) bool { return slices.Contains(editors, name) }
 
 func apply(it *owner.Item) {
 	if it.Node == nil || len(it.Parts) > 0 {
