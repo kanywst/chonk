@@ -43,7 +43,8 @@ func TestCollect(t *testing.T) {
 	if !slices.Equal(s.Wanted["python"], []string{"3.12.1"}) {
 		t.Errorf("python pins = %q", s.Wanted["python"])
 	}
-	if s.Default["node"] != "node" || s.Default["rust"] != "stable-aarch64-apple-darwin" {
+	if !slices.Equal(s.Default["node"], []string{"node"}) ||
+		!slices.Equal(s.Default["rust"], []string{"stable-aarch64-apple-darwin"}) {
 		t.Errorf("defaults = %v", s.Default)
 	}
 }
@@ -138,7 +139,7 @@ func TestApplyFlagsOnlyUnpinnedVersions(t *testing.T) {
 	rep := &owner.Report{Items: []*owner.Item{it}}
 	s := newSet()
 	s.add("rust", "stable")
-	s.Default["rust"] = "stable-aarch64-apple-darwin"
+	s.addDefault("rust", "stable-aarch64-apple-darwin")
 	Apply(rep, s)
 
 	if len(it.Parts) != 2 {
@@ -149,6 +150,13 @@ func TestApplyFlagsOnlyUnpinnedVersions(t *testing.T) {
 	}
 	if it.Reclaim() != "no project pins" {
 		t.Errorf("label = %q", it.Reclaim())
+	}
+	// The TUI moves a reclaimed part's bytes out of its parent through
+	// this; without it the item keeps its size and the stale row.
+	for _, p := range it.Parts {
+		if p.Project != it {
+			t.Error("a part does not point back at the item it belongs to")
+		}
 	}
 	for _, p := range it.Parts {
 		if filepath.Base(p.Path) == "stable-aarch64-apple-darwin" {
@@ -166,7 +174,7 @@ func TestApplyKeepsTheDefault(t *testing.T) {
 	it := item("nvm", n)
 	s := newSet()
 	s.add("node", "22")
-	s.Default["node"] = "25.4.0"
+	s.addDefault("node", "25.4.0")
 	Apply(&owner.Report{Items: []*owner.Item{it}}, s)
 	if len(it.Parts) != 0 {
 		t.Fatalf("flagged %d versions, want 0", len(it.Parts))
@@ -181,7 +189,7 @@ func TestApplyStopsOnAnAliasDefault(t *testing.T) {
 	it := item("nvm", n)
 	s := newSet()
 	s.add("node", "22")
-	s.Default["node"] = "node"
+	s.addDefault("node", "node")
 	Apply(&owner.Report{Items: []*owner.Item{it}}, s)
 	if len(it.Parts) != 0 {
 		t.Fatalf("an alias default still flagged %d versions", len(it.Parts))
@@ -210,5 +218,80 @@ func TestNvmOffersNoCommand(t *testing.T) {
 		if o.Regen == "" || o.Why == "" {
 			t.Errorf("%s has no explanation", m.ownerID)
 		}
+	}
+}
+
+// A directory beside the versions whose name is not a plain version is left
+// alone: its name would become an argument to the uninstall command.
+func TestApplySkipsNamesThatAreNotVersions(t *testing.T) {
+	n := tree("/h/.pyenv", []string{"versions"}, map[string]int64{
+		"3.12.1":   10,
+		"-f":       20,
+		"my-venv/": 30,
+		".tmp":     40,
+	})
+	it := item("pyenv", n)
+	s := newSet()
+	s.add("python", "3.12.1")
+	Apply(&owner.Report{Items: []*owner.Item{it}}, s)
+	for _, p := range it.Parts {
+		if !installedName(filepath.Base(p.Path)) {
+			t.Errorf("flagged %q, whose name is not a version", p.Path)
+		}
+	}
+}
+
+func TestInstalledName(t *testing.T) {
+	for _, ok := range []string{"3.12.1", "1.90.0-aarch64-apple-darwin", "v22.16.0", "stable", "nightly-2024-01-01"} {
+		if !installedName(ok) {
+			t.Errorf("%q should be an installed version name", ok)
+		}
+	}
+	for _, bad := range []string{"", "-f", "--help", ".tmp", "a b", "x/y", "$(touch)"} {
+		if installedName(bad) {
+			t.Errorf("%q should not be an installed version name", bad)
+		}
+	}
+}
+
+// pyenv global can set several versions at once, and all of them are in use.
+func TestMultipleDefaultsAreAllKept(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, ".pyenv/version"), "3.12.1\n3.11.4\n")
+	s := Collect(home, nil)
+	if !slices.Equal(s.Default["python"], []string{"3.12.1", "3.11.4"}) {
+		t.Fatalf("python defaults = %q", s.Default["python"])
+	}
+
+	n := tree("/h/.pyenv", []string{"versions"}, map[string]int64{"3.12.1": 10, "3.11.4": 20})
+	it := item("pyenv", n)
+	Apply(&owner.Report{Items: []*owner.Item{it}}, s)
+	if len(it.Parts) != 0 {
+		t.Errorf("a default version was flagged: %d parts", len(it.Parts))
+	}
+}
+
+// A toolchain pinned for one directory in rustup's settings is a pin.
+func TestRustupOverridesCount(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, ".rustup/settings.toml"),
+		"default_toolchain = \"stable\"\n\n[overrides]\n\"/w/p\" = \"1.90.0-aarch64-apple-darwin\"\n")
+	s := Collect(home, nil)
+	if !slices.Contains(s.Wanted["rust"], "1.90.0-aarch64-apple-darwin") {
+		t.Errorf("rust pins = %q, want the override", s.Wanted["rust"])
+	}
+}
+
+// Both commands must read pins the same way, or they disagree about which
+// versions nothing wants. Discover is that one source, and it includes the
+// home directory, where the global pin usually lives.
+func TestDiscoverIncludesHome(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, ".tool-versions"), "nodejs 18.1.0\n")
+	if !slices.Contains(Discover(home), home) {
+		t.Fatal("Discover left out the home directory")
+	}
+	if !slices.Contains(Collect(home, Discover(home)).Wanted["node"], "18.1.0") {
+		t.Error("a global pin in the home directory was not read")
 	}
 }

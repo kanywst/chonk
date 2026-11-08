@@ -42,9 +42,13 @@ func Run(ctx context.Context, home string, roots []string, prog *walk.Progress) 
 	if it := system.SnapshotItem(system.Snapshots(ctx, system.Runner(procs.Exec))); it != nil {
 		rep.Items = append(rep.Items, it)
 	}
-	projects := rep.Projects()
-	rep.ApplyGit(gitstate.Collect(ctx, gitstate.Runner(home), projects))
-	pins.Apply(rep, pins.Collect(home, projects))
+	rep.ApplyGit(gitstate.Collect(ctx, gitstate.Runner(home), rep.Projects()))
+	// pins.Discover, not the classified projects: `chonk why` has only one
+	// directory to go on and has to use it, and the two commands must not
+	// disagree about which versions nothing pins. It also reaches pins the
+	// project list misses, in a monorepo subdirectory or in the home
+	// directory itself.
+	pins.Apply(rep, pins.Collect(home, pins.Discover(home)))
 	workspaces.Apply(rep)
 	return rep
 }

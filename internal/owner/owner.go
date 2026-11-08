@@ -59,9 +59,10 @@ const (
 
 func (s Safety) String() string { return [...]string{"safe", "careful", "danger"}[s] }
 
-// Action is one way to reclaim an item. Cmd and Dir may use {path},
-// {parent} and {name}, which expand to the item's path, its parent and its
-// base name.
+// Action is one way to reclaim an item. Cmd, Dir and Env may use {path},
+// {parent}, {grandparent} and {name}, which expand to the item's path, its
+// parent, its parent's parent and its base name. {grandparent} is what a
+// version manager's root is, two levels above one installed version.
 type Action struct {
 	Label  string   `json:"label"`
 	Cmd    []string `json:"cmd,omitempty"`
@@ -81,7 +82,12 @@ type Action struct {
 
 // Expand fills in the placeholders for path.
 func (a Action) Expand(path string) Action {
-	r := strings.NewReplacer("{path}", path, "{parent}", parentOf(path), "{name}", baseOf(path))
+	r := strings.NewReplacer(
+		"{path}", path,
+		"{grandparent}", parentOf(parentOf(path)),
+		"{parent}", parentOf(path),
+		"{name}", baseOf(path),
+	)
 	out := a
 	out.Cmd = make([]string, len(a.Cmd))
 	for i, c := range a.Cmd {

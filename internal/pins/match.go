@@ -1,6 +1,7 @@
 package pins
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 
@@ -15,13 +16,18 @@ type manager struct {
 	tool    string   // the tool name pins use
 	holds   []string // path from the owner's directory to the versions
 	remove  []string // command that removes one version, or nil for none
+	env     []string // the root the command must act on, not the shell's
 	hint    string   // how to remove one, for the regen line
 }
 
 var managers = []manager{
 	{
+		// The command acts on whatever RUSTUP_HOME the shell exports, which
+		// need not be the tree this version was found in, so it is pinned
+		// to the directory chonk measured.
 		ownerID: "rustup", tool: "rust", holds: []string{"toolchains"},
 		remove: []string{"rustup", "toolchain", "uninstall", "{name}"},
+		env:    []string{"RUSTUP_HOME={grandparent}"},
 		hint:   "`rustup toolchain uninstall` removes one",
 	},
 	{
@@ -33,6 +39,7 @@ var managers = []manager{
 	{
 		ownerID: "pyenv", tool: "python", holds: []string{"versions"},
 		remove: []string{"pyenv", "uninstall", "-f", "{name}"},
+		env:    []string{"PYENV_ROOT={grandparent}"},
 		hint:   "`pyenv uninstall` removes one",
 	},
 }
@@ -43,12 +50,14 @@ var managers = []manager{
 func unusedOwner(m manager) owner.Owner {
 	o := owner.Owner{
 		ID: m.ownerID + "-unpinned", Kind: owner.KindToolchain, Safety: owner.Careful,
-		Why:   "An installed version no project on this disk pins, and not the default either.",
-		Regen: "Nothing here asks for it, though a shell or a script outside these projects still might. " + m.hint + ".",
+		Why: "An installed version that no pin file chonk read asks for, and not this manager's default either.",
+		Regen: "chonk reads the pin files a few levels under your home; a shell, a script or a project it did not " +
+			"reach could still want this version. " + m.hint + ".",
 	}
 	if m.remove != nil {
 		o.Actions = append(o.Actions, owner.Action{
-			Label: "Uninstall this version", Cmd: m.remove, Safety: owner.Careful, Needs: m.remove[0],
+			Label: "Uninstall this version", Cmd: m.remove, Env: m.env,
+			Safety: owner.Careful, Needs: m.remove[0],
 		})
 	}
 	return o
@@ -77,11 +86,11 @@ func apply(it *owner.Item, m manager, s Set) {
 	// "node", which stands for whichever version is newest, and calling
 	// that one unpinned would point at the version in use.
 	pins := s.Wanted[m.tool]
-	def := version(m.tool, s.Default[m.tool])
-	if def != "" && !isVersion(def) {
-		return
+	var def []string
+	for _, d := range s.Default[m.tool] {
+		def = append(def, version(m.tool, d))
 	}
-	for _, p := range pins {
+	for _, p := range slices.Concat(pins, def) {
 		if !isVersion(p) {
 			return
 		}
@@ -92,12 +101,22 @@ func apply(it *owner.Item, m manager, s Set) {
 	}
 	o := unusedOwner(m)
 	for _, ch := range dir.Children {
+		// The name becomes an argument to the uninstall command, and it
+		// came off the disk: one shaped like a flag, or like anything but
+		// a version, is left alone rather than passed along. A pyenv
+		// virtualenv living beside the versions lands here too.
+		if !installedName(ch.Name) {
+			continue
+		}
 		v := version(m.tool, ch.Name)
-		if v == "" || matchesAny(v, pins) || matches(v, def) {
+		if v == "" || matchesAny(v, pins) || matchesAny(v, def) {
 			continue
 		}
 		part := &owner.Item{
 			Owner: &o, Path: ch.Path(), Node: ch, Size: ch.Size, Logical: ch.Logical, Files: ch.Files,
+			// The TUI moves a reclaimed part's bytes out of its parent
+			// through this, and drops the row once it is gone.
+			Project: it,
 		}
 		it.Parts = append(it.Parts, part)
 	}
@@ -107,7 +126,7 @@ func apply(it *owner.Item, m manager, s Set) {
 	it.PartsLabel = "no project pins"
 	// Retell the item itself, so the count is visible without opening it.
 	c := *it.Owner
-	c.Regen = c.Regen + " No project on this disk pins " + plural(len(it.Parts)) + "."
+	c.Regen = c.Regen + " No pin file under your home names " + plural(len(it.Parts)) + "."
 	it.Owner = &c
 }
 
@@ -169,6 +188,24 @@ func isVersion(pin string) bool {
 	}
 	// A bare channel word ("node", "lts", "latest", "system") is an alias.
 	return pin[0] >= '0' && pin[0] <= '9'
+}
+
+// installedName reports whether a directory beside a manager's versions
+// looks like one: a plain version, never something git or a shell would
+// read as a flag.
+func installedName(name string) bool {
+	if name == "" || strings.HasPrefix(name, "-") || strings.HasPrefix(name, ".") {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+		case r == '.', r == '_', r == '-', r == '+':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // matches reports whether an installed version answers a pin: the same
