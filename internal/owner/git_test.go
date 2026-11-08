@@ -24,16 +24,17 @@ func TestGitDescribe(t *testing.T) {
 			says: []string{"not in git"},
 		},
 		{
-			name: "clean and pushed is safe",
+			// Careful, not safe: a clone needs the remote and the network.
+			name: "clean and pushed is careful, with the way back",
 			git:  Git{Known: true, Remote: remote},
-			want: Safe,
-			says: []string{"git clone " + remote},
+			want: Careful,
+			says: []string{"git clone " + remote, "still there"},
 		},
 		{
-			name:  "ignored build output chonk already lists stays safe",
+			name:  "ignored build output chonk already lists is not held against it",
 			git:   Git{Known: true, Remote: remote, Ignored: []string{"target/", ".DS_Store"}},
 			parts: []string{"/p/target"},
-			want:  Safe,
+			want:  Careful,
 		},
 		{
 			name: "ignored local state is careful, and named",
@@ -94,16 +95,18 @@ func TestGitDescribe(t *testing.T) {
 	}
 }
 
-// A clean, pushed project becomes safe to remove, and keeps a way to do it.
+// A clean, pushed project becomes removable, and keeps a way to do it. The
+// node has a parent, because a project inside a scan root is what this
+// describes; a root itself is covered below.
 func TestApplyGit(t *testing.T) {
-	n := &walk.Node{Name: "/p", Size: 10}
+	n := &walk.Node{Name: "p", Size: 10, Parent: &walk.Node{Name: "/h"}}
 	o := projectOwner
 	rep := &Report{Items: []*Item{{Owner: &o, Path: "/p", Node: n, Size: 10}}}
 	rep.ApplyGit(map[string]Git{"/p": {Known: true, Remote: "git@h:o/r.git"}})
 
 	it := rep.Items[0]
-	if it.Owner.Safety != Safe {
-		t.Fatalf("safety = %v, want safe", it.Owner.Safety)
+	if it.Owner.Safety != Careful {
+		t.Fatalf("safety = %v, want careful", it.Owner.Safety)
 	}
 	if len(it.Owner.Actions) == 0 {
 		t.Fatal("a removable project offers no way to remove it")
@@ -124,6 +127,20 @@ func TestApplyGitLeavesUnknownAlone(t *testing.T) {
 	rep.ApplyGit(map[string]Git{})
 	if rep.Items[0].Owner.Safety != Danger {
 		t.Error("an unasked project stopped being danger")
+	}
+}
+
+// A project that is a whole scan root is never offered for removal, however
+// clean git says it is: classify strips a root's actions, and the git pass
+// must not put one back.
+func TestApplyGitNeverTrashesAScanRoot(t *testing.T) {
+	root := &walk.Node{Name: "/h"}
+	o := projectOwner
+	o.Actions = nil
+	rep := &Report{Items: []*Item{{Owner: &o, Path: "/h", Node: root, Size: 10}}}
+	rep.ApplyGit(map[string]Git{"/h": {Known: true, Remote: "git@h:o/r.git"}})
+	if len(rep.Items[0].Owner.Actions) != 0 {
+		t.Errorf("a scan root was offered %v", rep.Items[0].Owner.Actions)
 	}
 }
 

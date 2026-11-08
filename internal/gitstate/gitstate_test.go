@@ -85,14 +85,107 @@ func TestOfUnreadable(t *testing.T) {
 	}
 }
 
-// A failing status must not leave a tree looking clean.
-func TestOfStatusFailureIsUnknown(t *testing.T) {
-	g := of(context.Background(), fake(t, map[string]string{
+// A question git does not answer must leave the tree unknown, never
+// looking clean: a clean tree is offered for removal.
+func TestOfFailuresAreUnknownNotClean(t *testing.T) {
+	base := map[string]string{
 		"remote":         "origin",
 		"remote get-url": "git@h:o/r.git",
-	}), "/p")
-	if g.Known {
-		t.Error("a tree whose status failed was reported as known")
+		"status":         "",
+		"log":            "",
+		"stash":          "",
+	}
+	for _, missing := range []string{"status", "log", "stash"} {
+		answers := map[string]string{}
+		for k, v := range base {
+			if k != missing {
+				answers[k] = v
+			}
+		}
+		g := of(context.Background(), fake(t, answers), "/p")
+		if g.Known {
+			t.Errorf("a tree whose %q failed was reported as known, so it reads as clean", missing)
+		}
+	}
+}
+
+// Commits on a detached HEAD or under a tag alone are on this disk and
+// nowhere else, so the walk must include them.
+func TestOfAsksAboutHeadAndTags(t *testing.T) {
+	var got []string
+	run := func(_ context.Context, _ string, args ...string) (string, error) {
+		if args[0] == "log" {
+			got = args
+		}
+		switch args[0] {
+		case "remote":
+			if len(args) > 1 {
+				return "git@h:o/r.git", nil
+			}
+			return "origin", nil
+		}
+		return "", nil
+	}
+	of(context.Background(), run, "/p")
+	for _, want := range []string{"HEAD", "--branches", "--tags", "--not", "--remotes"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("log args %q are missing %q", got, want)
+		}
+	}
+}
+
+func TestElsewhere(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"git@github.com:o/r.git", "git@github.com:o/r.git"},
+		{"https://github.com/o/r.git", "https://github.com/o/r.git"},
+		{"ssh://git@h/o/r.git", "ssh://git@h/o/r.git"},
+		// A credential in the URL is shown in the view and in --json.
+		{"https://user:token@h/o/r.git", "https://user@h/o/r.git"},
+		{"https://:token@h/o/r.git", "https://h/o/r.git"},
+		// Another directory on this disk is not somewhere the history is
+		// safe: the same scan may be about to clean it out.
+		{"/srv/bare.git", ""},
+		{"../bare.git", ""},
+		{"./bare.git", ""},
+		{"file:///srv/bare.git", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := elsewhere(tc.in); got != tc.want {
+			t.Errorf("elsewhere(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// A remote whose name did not come from chonk is not passed back to git.
+func TestOfSkipsStrangeRemoteNames(t *testing.T) {
+	var asked []string
+	run := func(_ context.Context, _ string, args ...string) (string, error) {
+		if args[0] == "remote" && len(args) > 1 {
+			asked = append(asked, args[len(args)-1])
+			return "git@h:o/r.git", nil
+		}
+		if args[0] == "remote" {
+			return "--upload-pack=touch\norigin", nil
+		}
+		return "", nil
+	}
+	of(context.Background(), run, "/p")
+	if slices.Contains(asked, "--upload-pack=touch") {
+		t.Error("a remote name shaped like a flag was passed to git")
+	}
+	if !slices.Contains(asked, "origin") {
+		t.Errorf("the real remote was not asked about: %q", asked)
+	}
+}
+
+// Every call carries the flags that stop a repository's own config naming a
+// program for git to run.
+func TestRunnerPinsConfigOff(t *testing.T) {
+	for _, want := range []string{"--no-optional-locks", "core.fsmonitor=false", "core.hooksPath=/dev/null"} {
+		if !slices.Contains(safeFlags, want) {
+			t.Errorf("safeFlags %q is missing %q", safeFlags, want)
+		}
 	}
 }
 

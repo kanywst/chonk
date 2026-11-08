@@ -45,10 +45,13 @@ func (g Git) describe(parts []*Item) (Safety, string, string) {
 	if !g.clean() {
 		return Danger, "A git working tree with work that only this disk has.", "Only here: " + g.risks() + "."
 	}
+	// Careful, not safe: safe means something regenerates by itself, and a
+	// clone is a step you take, needing the network and the remote to still
+	// be there. What is clean is also only clean as of this scan.
 	left := g.unexplained(parts)
-	clone := "`git clone " + g.Remote + "` brings the history back"
+	clone := "`git clone " + g.Remote + "` brings the history back, as long as that remote is still there"
 	if len(left) == 0 {
-		return Safe, "A git working tree, clean and pushed to its remote.",
+		return Careful, "A git working tree that was clean and fully pushed when this scan ran.",
 			clone + "; the build output inside is rebuilt."
 	}
 	return Careful, "A git working tree, clean and pushed, holding local state that is not in git.",
@@ -133,12 +136,19 @@ func (r *Report) ApplyGit(states map[string]Git) {
 		it.Git = g
 		o := *it.Owner
 		o.Safety, o.Why, o.Regen = g.describe(it.Parts)
-		if o.Safety != Danger {
+		// A scan root is never offered for removal, whatever git says about
+		// it: a dotfiles repository at ~, or a /usr/local that is a
+		// checkout, is a root first. Classify drops the actions of a root
+		// for this reason, and this must not put one back.
+		if o.Safety != Danger && !isRoot(it) {
 			o.Actions = append(append([]Action{}, o.Actions...), trash(o.Safety))
 		}
 		it.Owner = &o
 	}
 }
+
+// isRoot reports whether the item is a whole scan root.
+func isRoot(it *Item) bool { return it.Node != nil && it.Node.Parent == nil }
 
 // Projects are the paths of every project in the report, for the git pass.
 func (r *Report) Projects() []string {
