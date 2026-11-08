@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/kanywst/chonk/compare/v0.2.0...v0.3.0) (2026-11-08)
+
+
+### Features
+
+* say what nothing needs any more ([#5](https://github.com/kanywst/chonk/issues/5)) ([5be18a1](https://github.com/kanywst/chonk/commit/5be18a17f47a2e2fefb2f23d209031b396754961))
+
 ## [0.2.0](https://github.com/kanywst/chonk/compare/v0.1.0...v0.2.0) (2026-11-05)
 
 
