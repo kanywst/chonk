@@ -346,3 +346,25 @@ func TestPinsWithALeadingVStillMatch(t *testing.T) {
 		t.Errorf("a v-prefixed pin did not match: %d parts flagged", len(it.Parts))
 	}
 }
+
+// A conda install or virtualenv among pyenv's versions is not a version,
+// and "no project pins this version" is not a reason to uninstall it.
+func TestApplyOnlyFlagsThingsThatAreVersions(t *testing.T) {
+	n := tree("/h/.pyenv", []string{"versions"}, map[string]int64{
+		"3.12.1":     10,
+		"miniconda3": 20,
+		"my_env":     30,
+		"anaconda3":  40,
+	})
+	it := item("pyenv", n)
+	s := newSet()
+	s.addDefault("python", "3.12.1")
+	Apply(&owner.Report{Items: []*owner.Item{it}}, s)
+	if len(it.Parts) != 0 {
+		var names []string
+		for _, p := range it.Parts {
+			names = append(names, filepath.Base(p.Path))
+		}
+		t.Errorf("flagged %q, none of which is a version", names)
+	}
+}

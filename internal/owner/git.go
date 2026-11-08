@@ -35,7 +35,7 @@ func (g Git) clean() bool { return g.Dirty == 0 && g.Unpushed == 0 && g.Stashes 
 // describe is the safety, why and regen a project gets from its git state.
 // parts are the build outputs chonk already found inside it, which a clone
 // does not need to bring back.
-func (g Git) describe(parts []*Item) (Safety, string, string) {
+func (g Git) describe(dir string, parts []*Item) (Safety, string, string) {
 	if !g.Known {
 		return projectOwner.Safety, projectOwner.Why, projectOwner.Regen
 	}
@@ -49,7 +49,7 @@ func (g Git) describe(parts []*Item) (Safety, string, string) {
 	// Careful, not safe: safe means something regenerates by itself, and a
 	// clone is a step you take, needing the network and the remote to still
 	// be there. What is clean is also only clean as of this scan.
-	left := g.unexplained(parts)
+	left := g.unexplained(dir, parts)
 	clone := "`git clone " + g.Remote + "` brings the history back, as long as that remote still has what your last fetch saw"
 	if len(left) == 0 {
 		return Careful, "A git working tree that was clean and fully pushed when this scan ran.",
@@ -83,15 +83,17 @@ func (g Git) risks() string {
 
 // unexplained drops the ignored paths that are build output chonk already
 // lists as a part of the project, leaving the local state nothing explains.
-func (g Git) unexplained(parts []*Item) []string {
+// The comparison is on the whole path, not the base name: a hand-made
+// scratch/target is not the target/ that was measured as build output.
+func (g Git) unexplained(dir string, parts []*Item) []string {
 	known := make(map[string]bool, len(parts))
 	for _, p := range parts {
-		known[filepath.Base(p.Path)] = true
+		known[filepath.Clean(p.Path)] = true
 	}
 	var out []string
 	for _, p := range g.Ignored {
-		base := filepath.Base(strings.TrimSuffix(p, "/"))
-		if known[base] || throwaway[base] {
+		rel := strings.TrimSuffix(p, "/")
+		if known[filepath.Join(dir, rel)] || throwaway[filepath.Base(rel)] {
 			continue
 		}
 		out = append(out, p)
@@ -137,7 +139,7 @@ func (r *Report) ApplyGit(states map[string]Git) {
 		}
 		it.Git = g
 		o := *it.Owner
-		o.Safety, o.Why, o.Regen = g.describe(it.Parts)
+		o.Safety, o.Why, o.Regen = g.describe(it.Path, it.Parts)
 		// Removing a project takes everything under it, and git was asked
 		// only about this tree: a repository nested inside, a submodule or
 		// a clone kept in an ignored directory, answers for itself. Say so
@@ -156,7 +158,7 @@ func (r *Report) ApplyGit(states map[string]Git) {
 		// directory chonk cannot explain may hold a repository of its own,
 		// too small or too deep for the walk to have kept, and removing
 		// the project would take that with it.
-		if o.Safety != Danger && !isRoot(it) && len(g.unexplained(it.Parts)) == 0 {
+		if o.Safety != Danger && !isRoot(it) && len(g.unexplained(it.Path, it.Parts)) == 0 {
 			o.Actions = append(append([]Action{}, o.Actions...), trash(o.Safety))
 		}
 		it.Owner = &o
@@ -172,7 +174,10 @@ func heldInside(it *Item, projects []*Item, states map[string]Git) string {
 			continue
 		}
 		g, ok := states[other.Path]
-		if !ok || !g.Known || g.Remote == "" || !g.clean() {
+		// Its own ignored state counts too: a submodule holding a .env is
+		// no more recoverable than one holding a commit.
+		if !ok || !g.Known || g.Remote == "" || !g.clean() ||
+			len(g.unexplained(other.Path, other.Parts)) != 0 {
 			return other.Path
 		}
 	}

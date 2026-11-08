@@ -1,6 +1,7 @@
 package owner
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -79,7 +80,7 @@ func TestGitDescribe(t *testing.T) {
 			for _, p := range tc.parts {
 				parts = append(parts, &Item{Path: p})
 			}
-			got, why, regen := tc.git.describe(parts)
+			got, why, regen := tc.git.describe("/p", parts)
 			if got != tc.want {
 				t.Errorf("safety = %v, want %v (regen %q)", got, tc.want, regen)
 			}
@@ -230,5 +231,36 @@ func TestApplyGitOffersNothingWhenSomethingInsideIsUnexplained(t *testing.T) {
 		if a.Trash {
 			t.Error("a project holding unexplained ignored state was offered for the Trash")
 		}
+	}
+}
+
+// A hand-made scratch/target is not the target/ that was measured as build
+// output, so matching on the base name excused the wrong thing.
+func TestUnexplainedComparesWholePaths(t *testing.T) {
+	g := Git{Known: true, Remote: "git@h:o/r.git", Ignored: []string{"target/", "scratch/target/"}}
+	left := g.unexplained("/h/p", []*Item{{Path: "/h/p/target"}})
+	if !slices.Equal(left, []string{"scratch/target/"}) {
+		t.Errorf("unexplained = %q, want only the one nothing measured", left)
+	}
+}
+
+// A nested repository's own unexplained state is no more recoverable than a
+// commit, so it holds the project around it just the same.
+func TestHeldInsideCountsNestedIgnoredState(t *testing.T) {
+	parent := &walk.Node{Name: "/h"}
+	outer := &Item{Owner: new(projectOwner), Path: "/h/p", Node: &walk.Node{Name: "p", Parent: parent}}
+	inner := &Item{Owner: new(projectOwner), Path: "/h/p/sub", Node: &walk.Node{Name: "sub", Parent: parent}}
+	rep := &Report{Items: []*Item{outer, inner}}
+	rep.ApplyGit(map[string]Git{
+		"/h/p":     {Known: true, Remote: "git@h:o/r.git"},
+		"/h/p/sub": {Known: true, Remote: "git@h:o/s.git", Ignored: []string{".env"}},
+	})
+	for _, a := range outer.Owner.Actions {
+		if a.Trash {
+			t.Error("a project whose submodule holds unexplained state was offered for the Trash")
+		}
+	}
+	if !strings.Contains(outer.Owner.Regen, "sub") {
+		t.Errorf("regen does not name the nested repository: %q", outer.Owner.Regen)
 	}
 }

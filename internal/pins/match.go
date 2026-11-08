@@ -116,8 +116,12 @@ func apply(it *owner.Item, m manager, s Set) {
 		if !installedName(ch.Name) {
 			continue
 		}
+		// It also has to look like a version itself. A conda install or a
+		// virtualenv sitting among pyenv's versions is a plain directory
+		// name that no pin will ever match, and removing it is not what
+		// "no project pins this version" means.
 		v := version(m.tool, ch.Name)
-		if v == "" || matchesAny(v, pins) || matchesAny(v, def) {
+		if !isVersion(m.tool, v) || matchesAny(v, pins) || matchesAny(v, def) {
 			continue
 		}
 		part := &owner.Item{

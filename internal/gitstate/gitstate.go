@@ -256,9 +256,12 @@ func elsewhere(raw string) string {
 	// The URL is shown as a `git clone` command to run, so it has to be an
 	// address and nothing else. git's own ext:: transport runs a command,
 	// and a value beginning with a dash would be read as an option.
-	// "::" is git's transport-helper form, as in ext::sh -c, which runs a
-	// command of the repository's choosing.
-	if strings.ContainsAny(raw, " \t;|&$`\n<>()") || strings.HasPrefix(raw, "-") || strings.Contains(raw, "::") {
+	// The value is printed as a command to run, so it is checked against
+	// what a URL may contain rather than against a list of what it may
+	// not: a denylist lets through whatever it did not think of, such as
+	// the `!` a shell expands. "::" is git's transport-helper form, as in
+	// ext::sh -c, which runs a command of the repository's choosing.
+	if !urlChars.MatchString(raw) || strings.HasPrefix(raw, "-") || strings.Contains(raw, "::") {
 		return ""
 	}
 	// scp-style, git@host:path/to.git: a host, so not this disk.
@@ -290,6 +293,11 @@ func elsewhere(raw string) string {
 	}
 	return u.String()
 }
+
+// urlChars is what a remote URL may be made of. Everything a shell would
+// act on is absent, so the command chonk prints is the address and nothing
+// more.
+var urlChars = regexp.MustCompile(`^[A-Za-z0-9._~:/?#@%+=-]+$`)
 
 // transports are the schemes that name a server to clone from. git's ext::
 // and the local file:// are deliberately absent.

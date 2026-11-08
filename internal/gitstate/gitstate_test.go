@@ -403,3 +403,23 @@ func TestNamesAProgramRefusesChosenPathsAndGit(t *testing.T) {
 		}
 	}
 }
+
+// The URL is printed as a command, so it is checked against what a URL may
+// contain rather than a list of what it may not.
+func TestElsewhereAllowsOnlyUrlCharacters(t *testing.T) {
+	for _, raw := range []string{
+		`https://h/o/r.git!`,
+		`https://h/o/"r".git`,
+		"https://h/o/r.git'",
+		`https://h/o/r.git\`,
+		"https://h/o/r.git{x}",
+	} {
+		if got := elsewhere(raw); got != "" {
+			t.Errorf("elsewhere(%q) = %q, want empty", raw, got)
+		}
+	}
+	// An ordinary URL with a port and a path still works.
+	if got := elsewhere("ssh://git@h.example.com:2222/o/r.git"); got == "" {
+		t.Error("a plain ssh URL with a port was refused")
+	}
+}
