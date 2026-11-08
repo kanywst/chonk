@@ -155,6 +155,8 @@ type Item struct {
 	Parts []*Item
 	// Project is the project an artifact belongs to.
 	Project *Item
+	// Git is what git says about a project's working tree.
+	Git Git
 	// SizeUnknown is set when nothing can say how big the item is until it
 	// is gone, such as APFS snapshots.
 	SizeUnknown bool

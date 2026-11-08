@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kanywst/chonk/internal/gitstate"
 	"github.com/kanywst/chonk/internal/history"
 	"github.com/kanywst/chonk/internal/owner"
 	"github.com/kanywst/chonk/internal/procs"
@@ -22,13 +23,15 @@ func Roots(home string) []string {
 }
 
 // Run walks roots and classifies them. Local APFS snapshots, which no
-// directory shows, are added as an item of their own.
-func Run(ctx context.Context, roots []string, prog *walk.Progress) *owner.Report {
+// directory shows, are added as an item of their own, and git is asked what
+// each project holds that only this disk has.
+func Run(ctx context.Context, home string, roots []string, prog *walk.Progress) *owner.Report {
 	nodes := walk.Walk(ctx, roots, walk.Options{MinKeep: 1 << 20, Skip: skip}, prog)
 	rep := owner.Classify(nodes, owner.Options{})
 	if it := system.SnapshotItem(system.Snapshots(ctx, system.Runner(procs.Exec))); it != nil {
 		rep.Items = append(rep.Items, it)
 	}
+	rep.ApplyGit(gitstate.Collect(ctx, gitstate.Runner(home), rep.Projects()))
 	return rep
 }
 

@@ -51,7 +51,7 @@ func NewSystem(home string) *System { return &System{Home: home, in: inspect.New
 
 // Scan walks the machine.
 func (s *System) Scan(ctx context.Context, prog *walk.Progress) *owner.Report {
-	return scan.Run(ctx, scan.Roots(s.Home), prog)
+	return scan.Run(ctx, s.Home, scan.Roots(s.Home), prog)
 }
 
 // Inspect looks inside an item.

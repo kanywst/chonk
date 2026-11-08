@@ -22,6 +22,7 @@ import (
 
 	"github.com/kanywst/chonk/internal/demo"
 	"github.com/kanywst/chonk/internal/format"
+	"github.com/kanywst/chonk/internal/gitstate"
 	"github.com/kanywst/chonk/internal/history"
 	"github.com/kanywst/chonk/internal/inspect"
 	"github.com/kanywst/chonk/internal/owner"
@@ -179,7 +180,7 @@ func (a *app) scan(ctx context.Context, errOut io.Writer) (*owner.Report, histor
 			}
 		}()
 	}
-	rep := scan.Run(ctx, scan.Roots(a.home), &prog)
+	rep := scan.Run(ctx, a.home, scan.Roots(a.home), &prog)
 	close(done)
 	time.Sleep(10 * time.Millisecond)
 	now := time.Now()
@@ -207,8 +208,19 @@ type jsonItem struct {
 	Parts       []jsonItem      `json:"parts,omitempty"`
 	Reclaimable int64           `json:"reclaimable_bytes,omitempty"`
 	Inspect     *inspect.Report `json:"inspect,omitempty"`
+	Git         *jsonGit        `json:"git,omitempty"`
 	SizeUnknown bool            `json:"size_unknown,omitempty"`
 	Processes   []procs.Proc    `json:"processes,omitempty"`
+}
+
+// jsonGit is what git says about a project, when chonk could ask.
+type jsonGit struct {
+	Remote   string   `json:"remote,omitempty"`
+	Dirty    int      `json:"dirty"`
+	Unpushed int      `json:"unpushed"`
+	Branches []string `json:"branches,omitempty"`
+	Stashes  int      `json:"stashes"`
+	Ignored  []string `json:"ignored_not_in_git,omitempty"`
 }
 
 type jsonAction struct {
@@ -224,6 +236,9 @@ func toJSON(it *owner.Item) jsonItem {
 		Size: it.Size, Logical: it.Logical, Touched: it.Touched, Safety: it.Owner.Safety.String(),
 		Why: it.Owner.Why, Regen: it.Owner.Regen, Hotspot: it.Hotspot, Reclaimable: it.Reclaimable(),
 		SizeUnknown: it.SizeUnknown,
+	}
+	if g := it.Git; g.Known {
+		j.Git = &jsonGit{Remote: g.Remote, Dirty: g.Dirty, Unpushed: g.Unpushed, Branches: g.Branches, Stashes: g.Stashes, Ignored: g.Ignored}
 	}
 	for _, ac := range it.Owner.Actions {
 		e := ac.Expand(it.Path)
@@ -347,6 +362,11 @@ func (a *app) why(ctx context.Context, path string, out io.Writer) error {
 	if n.Touched > 0 {
 		target.Touched = time.Unix(n.Touched, 0)
 	}
+	// Ask git the same question `chonk ls` asks, so one project is
+	// described the same way whichever command you reach it through.
+	rep := &owner.Report{Items: []*owner.Item{target}}
+	rep.ApplyGit(gitstate.Collect(ctx, gitstate.Runner(a.home), rep.Projects()))
+	o = target.Owner
 	rpt := inspect.New(a.home).Inspect(ctx, target)
 	ps, _ := procs.List(ctx, procs.Exec)
 	running := procs.Match([]*owner.Item{target}, ps, a.home)[target]
