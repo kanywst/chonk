@@ -11,6 +11,7 @@ import (
 	"github.com/kanywst/chonk/internal/gitstate"
 	"github.com/kanywst/chonk/internal/history"
 	"github.com/kanywst/chonk/internal/owner"
+	"github.com/kanywst/chonk/internal/pins"
 	"github.com/kanywst/chonk/internal/procs"
 	"github.com/kanywst/chonk/internal/system"
 	"github.com/kanywst/chonk/internal/walk"
@@ -31,7 +32,9 @@ func Run(ctx context.Context, home string, roots []string, prog *walk.Progress) 
 	if it := system.SnapshotItem(system.Snapshots(ctx, system.Runner(procs.Exec))); it != nil {
 		rep.Items = append(rep.Items, it)
 	}
-	rep.ApplyGit(gitstate.Collect(ctx, gitstate.Runner(home), rep.Projects()))
+	projects := rep.Projects()
+	rep.ApplyGit(gitstate.Collect(ctx, gitstate.Runner(home), projects))
+	pins.Apply(rep, pins.Collect(home, projects))
 	return rep
 }
 

@@ -26,6 +26,7 @@ import (
 	"github.com/kanywst/chonk/internal/history"
 	"github.com/kanywst/chonk/internal/inspect"
 	"github.com/kanywst/chonk/internal/owner"
+	"github.com/kanywst/chonk/internal/pins"
 	"github.com/kanywst/chonk/internal/procs"
 	"github.com/kanywst/chonk/internal/reclaim"
 	"github.com/kanywst/chonk/internal/scan"
@@ -306,7 +307,7 @@ func (a *app) ls(ctx context.Context, out, errOut io.Writer) error {
 			}
 			extra := ""
 			if r := it.Reclaimable(); r > 0 {
-				extra = format.Bytes(r) + " build output"
+				extra = format.Bytes(r) + " " + it.Reclaim()
 			}
 			if it.Node != nil && it.Node.Denied {
 				extra = "unreadable (give the terminal Full Disk Access)"
@@ -366,6 +367,7 @@ func (a *app) why(ctx context.Context, path string, out io.Writer) error {
 	// described the same way whichever command you reach it through.
 	rep := &owner.Report{Items: []*owner.Item{target}}
 	rep.ApplyGit(gitstate.Collect(ctx, gitstate.Runner(a.home), rep.Projects()))
+	pins.Apply(rep, pins.Collect(a.home, pins.Discover(a.home)))
 	o = target.Owner
 	rpt := inspect.New(a.home).Inspect(ctx, target)
 	ps, _ := procs.List(ctx, procs.Exec)

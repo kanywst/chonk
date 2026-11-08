@@ -157,18 +157,29 @@ type Item struct {
 	Project *Item
 	// Git is what git says about a project's working tree.
 	Git Git
+	// PartsLabel says what the Parts are, for the one-line annotation in
+	// the view. Empty means build output.
+	PartsLabel string
 	// SizeUnknown is set when nothing can say how big the item is until it
 	// is gone, such as APFS snapshots.
 	SizeUnknown bool
 }
 
-// Reclaimable is how much of a project its build outputs take.
+// Reclaimable is how much of an item its removable parts take.
 func (it *Item) Reclaimable() int64 {
 	var n int64
 	for _, p := range it.Parts {
 		n += p.Size
 	}
 	return n
+}
+
+// Reclaim is how the view annotates the size of the removable parts.
+func (it *Item) Reclaim() string {
+	if it.PartsLabel != "" {
+		return it.PartsLabel
+	}
+	return "build output"
 }
 
 // Name is how the view labels the item.
