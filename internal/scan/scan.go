@@ -15,6 +15,7 @@ import (
 	"github.com/kanywst/chonk/internal/procs"
 	"github.com/kanywst/chonk/internal/system"
 	"github.com/kanywst/chonk/internal/walk"
+	"github.com/kanywst/chonk/internal/workspaces"
 )
 
 // Roots are the places chonk looks: your home, apps, and where package
@@ -35,6 +36,7 @@ func Run(ctx context.Context, home string, roots []string, prog *walk.Progress) 
 	projects := rep.Projects()
 	rep.ApplyGit(gitstate.Collect(ctx, gitstate.Runner(home), projects))
 	pins.Apply(rep, pins.Collect(home, projects))
+	workspaces.Apply(rep)
 	return rep
 }
 

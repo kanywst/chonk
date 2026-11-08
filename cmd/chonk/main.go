@@ -35,6 +35,7 @@ import (
 	"github.com/kanywst/chonk/internal/tui"
 	"github.com/kanywst/chonk/internal/version"
 	"github.com/kanywst/chonk/internal/walk"
+	"github.com/kanywst/chonk/internal/workspaces"
 )
 
 const usage = `chonk shows what is eating your disk, why it exists, and the right way to
@@ -368,6 +369,7 @@ func (a *app) why(ctx context.Context, path string, out io.Writer) error {
 	rep := &owner.Report{Items: []*owner.Item{target}}
 	rep.ApplyGit(gitstate.Collect(ctx, gitstate.Runner(a.home), rep.Projects()))
 	pins.Apply(rep, pins.Collect(a.home, pins.Discover(a.home)))
+	workspaces.Apply(rep)
 	o = target.Owner
 	rpt := inspect.New(a.home).Inspect(ctx, target)
 	ps, _ := procs.List(ctx, procs.Exec)
