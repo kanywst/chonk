@@ -13,11 +13,13 @@ func TestLocalPath(t *testing.T) {
 	cases := []struct{ uri, want string }{
 		{"file:///Users/x/p", "/Users/x/p"},
 		{"file:///Users/x/a%20b", "/Users/x/a b"},
-		// A workspace on another machine or an unmounted volume is not gone.
+		// A workspace on another machine is not a path here at all.
 		{"vscode-remote://ssh-remote%2Bhost/home/x/p", ""},
-		{"file:///Volumes/External/p", ""},
 		{"", ""},
 		{"file://relative", ""},
+		// Whether a local path is reachable is for the filesystem to say,
+		// not for a list of mount-point names, so it is returned as a path.
+		{"file:///Volumes/External/p", "/Volumes/External/p"},
 	}
 	for _, tc := range cases {
 		if got := localPath(tc.uri); got != tc.want {
@@ -48,7 +50,8 @@ func TestStale(t *testing.T) {
 	}{
 		{"missing.json", `{"folder":"file://` + gone + `"}`, true},
 		{"present.json", `{"folder":"file://` + here + `"}`, false},
-		{"multiroot.json", `{"workspace":"file://` + gone + `/x.code-workspace"}`, true},
+		// A .code-workspace file deleted from a directory that is still there.
+		{"multiroot.json", `{"workspace":"file://` + dir + `/x.code-workspace"}`, true},
 		// Nothing checkable means not stale, never the other way round.
 		{"untitled.json", `{}`, false},
 		{"broken.json", `not json`, false},
@@ -61,6 +64,27 @@ func TestStale(t *testing.T) {
 	}
 	if stale(filepath.Join(dir, "no-such-file.json")) {
 		t.Error("a workspace with no workspace.json was called stale")
+	}
+}
+
+// An unmounted volume takes the folder's parent with it, and then nothing
+// can tell "deleted" from "unplugged". That must not read as gone.
+func TestStaleNeedsTheParentToSaySo(t *testing.T) {
+	dir := t.TempDir()
+	away := filepath.Join(dir, "not-mounted", "project")
+	p := filepath.Join(dir, "away.json")
+	if err := os.WriteFile(p, []byte(`{"folder":"file://`+away+`"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if stale(p) {
+		t.Error("a folder whose parent is also missing was called gone")
+	}
+	// With the parent back, the missing folder really is gone.
+	if err := os.MkdirAll(filepath.Dir(away), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !stale(p) {
+		t.Error("a folder missing from an existing parent was not called gone")
 	}
 }
 
@@ -111,8 +135,13 @@ func TestApply(t *testing.T) {
 	if it.Reclaim() != "for folders that are gone" {
 		t.Errorf("label = %q", it.Reclaim())
 	}
-	if it.Parts[0].Owner.Safety != owner.Safe {
-		t.Errorf("safety = %v, want safe", it.Parts[0].Owner.Safety)
+	// Careful, not safe: the state database holds chat and agent
+	// transcripts that nothing can rebuild.
+	if it.Parts[0].Owner.Safety != owner.Careful {
+		t.Errorf("safety = %v, want careful", it.Parts[0].Owner.Safety)
+	}
+	if it.Parts[0].Project != it {
+		t.Error("a part does not point back at the editor it belongs to")
 	}
 }
 

@@ -23,14 +23,19 @@ var editors = []string{
 	"Code", "Code - Insiders", "Cursor", "VSCodium", "Antigravity", "Windsurf", "Trae", "Positron",
 }
 
-// staleOwner is state for a workspace whose folder is gone. It is safe: the
-// folder it describes no longer exists, so there is nothing left to restore
-// it for.
+// staleOwner is state for a workspace whose folder is gone. Careful, not
+// safe: this is not only open editors and undo history. The state database
+// beside them holds per-workspace chat and agent transcripts in Cursor,
+// Windsurf and Copilot Chat, and other extensions' per-workspace data, and
+// none of that comes back. The folder being gone makes the state orphaned,
+// not worthless -- and a folder deleted so it could be re-cloned gets a new
+// workspace id, so this state would not attach to it again.
 var staleOwner = owner.Owner{
-	ID: "workspace-storage-stale", Name: "workspace state", Kind: owner.KindApp, Safety: owner.Safe,
-	Why:     "An editor's state for a workspace whose folder is no longer on this disk.",
-	Regen:   "Nothing asks for it again: the folder it belongs to is gone.",
-	Actions: []owner.Action{{Label: "Move to the Trash", Trash: true, Safety: owner.Safe}},
+	ID: "workspace-storage-stale", Name: "workspace state", Kind: owner.KindApp, Safety: owner.Careful,
+	Why: "An editor's state for a workspace whose folder is no longer on this disk: its open editors and undo history, and any per-workspace chat or agent transcripts an extension kept there.",
+	Regen: "Nothing will ask for it again at that path, but the transcripts and extension state in it are not " +
+		"recoverable, and re-cloning the folder gets a new workspace id rather than this one.",
+	Actions: []owner.Action{{Label: "Move to the Trash", Trash: true, Safety: owner.Careful}},
 }
 
 // Apply points each editor's item at the workspace state left behind.
@@ -61,6 +66,9 @@ func apply(it *owner.Item) {
 		it.Parts = append(it.Parts, &owner.Item{
 			Owner: &staleOwner, Path: ch.Path(), Node: ch,
 			Size: ch.Size, Logical: ch.Logical, Files: ch.Files,
+			// The TUI moves a reclaimed part's bytes out of its parent
+			// through this, and drops the row once it is gone.
+			Project: it,
 		})
 	}
 	if len(it.Parts) == 0 {
@@ -104,14 +112,24 @@ func stale(path string) bool {
 	if p == "" {
 		return false
 	}
+	// Fail closed: the folder counts as gone only when its own parent is
+	// still there to say so. A volume that is merely unmounted takes the
+	// parent with it, and then nothing here can tell "deleted" from
+	// "unplugged" -- which no list of mount points gets right either, with
+	// /Volumes, /media, /run/media and automounts all meaning the same
+	// thing on different systems.
+	if fi, err := os.Stat(filepath.Dir(p)); err != nil || !fi.IsDir() {
+		return false
+	}
 	_, err = os.Lstat(p)
 	return os.IsNotExist(err)
 }
 
-// localPath is the path a workspace URI names, when it is one on this disk
-// that chonk can check. A remote workspace (vscode-remote://, ssh) lives on
-// another machine, and one on a volume that is not mounted is not gone, only
-// away, so both come back empty.
+// localPath is the path a workspace URI names, when it is a path on this
+// machine at all. A remote workspace (vscode-remote://, ssh) lives
+// somewhere else, so it comes back empty. Whether the path is reachable is
+// decided by stale, which asks the filesystem rather than guessing from the
+// name.
 func localPath(uri string) string {
 	rest, ok := strings.CutPrefix(uri, "file://")
 	if !ok {
@@ -119,9 +137,6 @@ func localPath(uri string) string {
 	}
 	p, err := url.PathUnescape(rest)
 	if err != nil || !strings.HasPrefix(p, "/") {
-		return ""
-	}
-	if vol, _, _ := strings.Cut(strings.TrimPrefix(p, "/"), "/"); vol == "Volumes" || vol == "net" || vol == "mnt" {
 		return ""
 	}
 	return p
