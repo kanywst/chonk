@@ -24,10 +24,13 @@ Disk viewers list directories. Cleaners delete a fixed list of caches. Neither t
 - **Groups everything by who put it there**: VMs and container engines, toolchains, caches, build output inside projects, app data, your files. Whatever no rule knows is still listed, as "unclaimed", at the directory where its size concentrates, so nothing large hides.
 - **Counts space on disk**, not file lengths. A sparse 54G VM image that holds 16G counts as 16G. Hard links count once.
 - **Says why each thing exists**, what removing it costs, and how safe that is (safe, careful, danger).
+- **Asks git what a project holds.** A clean tree whose history is on a remote is safe, with `git clone` as the way back; one with uncommitted work, a commit no remote has, or a stash is danger, and chonk names which. Ignored local state that a fresh clone would not restore makes it careful.
+- **Says which installed versions nothing pins.** It reads the pins in your projects (`.nvmrc`, `rust-toolchain.toml`, `.tool-versions`…) and each version manager's own default, and points at the toolchains neither asks for.
+- **Finds the state left behind for folders that are gone**: the per-workspace history a VS Code-family editor keeps for a directory you deleted months ago.
 - **Looks inside VMs** (Rancher Desktop, Docker Desktop, Podman machine) by asking the tool, and shows the space the guest freed but the host still holds.
 - **Reclaims with the owner's own command** (`cargo clean`, `go clean -cache`, `brew cleanup`, `fstrim` in the guest, `podman machine rm`), or moves things to the Trash. It measures free space before and after and reports what actually came back, and runs the trim itself after pruning inside a VM.
 - **Ties processes to what they own**: the VM's host agent and guest memory, the dev server running in a project. Before removing something, chonk warns when processes are running from it.
-- **Shows what no directory explains**: Time Machine local snapshots (which keep deleted files' blocks alive), and how much of the volume lies outside the scan (swap, logs, other users).
+- **Shows what no directory explains**: Time Machine local snapshots (which keep deleted files' blocks alive), a running app's code-sign clone in `/var/folders` (a second copy of its whole bundle), and how much of the volume still lies outside the scan.
 - **Remembers past scans**, so you can see what grew since last week.
 
 ## Install
@@ -71,7 +74,7 @@ chonk schedule on     # record a snapshot every day (macOS, launchd; --hour N)
 
 A full scan of a home with three million files takes about 30 seconds on an M-series Mac; on macOS chonk reads directories with `getattrlistbulk`, one call per batch of entries instead of one per file.
 
-chonk looks under your home, `/Applications`, `/opt/homebrew`, `/usr/local` and `/nix`. It skips iCloud and file-provider folders, which mostly hold placeholders for files that live elsewhere. Scan history and the reclaim ledger are in `$XDG_STATE_HOME/chonk` (default `~/.local/state/chonk`). `NO_COLOR` is respected.
+chonk looks under your home, `/Applications`, `/opt/homebrew`, `/usr/local`, `/nix`, `/Library/Updates`, `/private/var/vm` and this login's own `/var/folders` container — never another account's. It skips iCloud and file-provider folders, which mostly hold placeholders for files that live elsewhere. Scan history and the reclaim ledger are in `$XDG_STATE_HOME/chonk` (default `~/.local/state/chonk`). `NO_COLOR` is respected.
 
 ## Safety
 
