@@ -51,7 +51,7 @@ func NewSystem(home string) *System { return &System{Home: home, in: inspect.New
 
 // Scan walks the machine.
 func (s *System) Scan(ctx context.Context, prog *walk.Progress) *owner.Report {
-	return scan.Run(ctx, scan.Roots(s.Home), prog)
+	return scan.Run(ctx, s.Home, scan.Roots(s.Home), prog)
 }
 
 // Inspect looks inside an item.
@@ -478,11 +478,20 @@ func (m *model) applyReclaim(r reclaimedMsg) {
 	}
 	m.rep.Total += delta
 	if gone && it.Project == nil {
+		// Removing a directory takes what the report listed separately
+		// inside it, such as a repository nested in a project. Those rows
+		// and their bytes go with it, or the list keeps offering paths
+		// that are not there and the total no longer adds up.
 		kept := m.rep.Items[:0]
 		for _, x := range m.rep.Items {
-			if x != it {
-				kept = append(kept, x)
+			if x == it {
+				continue
 			}
+			if strings.HasPrefix(x.Path, it.Path+"/") {
+				m.rep.Total -= x.Size
+				continue
+			}
+			kept = append(kept, x)
 		}
 		m.rep.Items = kept
 	}

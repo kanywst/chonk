@@ -24,3 +24,14 @@ func TestSnapshotPartial(t *testing.T) {
 		t.Errorf("items = %v", s.Items)
 	}
 }
+
+// Roots reaches past your own files, to the places outside the home
+// directory that hold space with one known owner.
+func TestRootsCoverSystemPlaces(t *testing.T) {
+	got := Roots("/h")
+	for _, want := range []string{"/h", "/Applications", "/opt/homebrew", "/usr/local", "/nix", "/Library/Updates", "/private/var/vm"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("Roots is missing %q: %q", want, got)
+		}
+	}
+}

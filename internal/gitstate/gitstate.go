@@ -1,0 +1,338 @@
+// Package gitstate asks git what a working tree holds that only this disk
+// has, so chonk can say whether removing a project loses anything.
+package gitstate
+
+import (
+	"context"
+	"net/url"
+	"os/exec"
+	"regexp"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/kanywst/chonk/internal/owner"
+	"github.com/kanywst/chonk/internal/reclaim"
+)
+
+// Run runs one git command in dir. Tests replace it.
+type Run func(ctx context.Context, dir string, args ...string) (string, error)
+
+// safeFlags go before every subcommand. git runs inside directories found
+// on disk, and a repository's own .git/config is read there: core.fsmonitor
+// names a program `git status` executes, and a tree that was copied or
+// unpacked rather than cloned can carry one. A -c on the command line wins
+// over any config file, so these turn that off for every call.
+var safeFlags = []string{
+	"--no-optional-locks",
+	"-c", "core.fsmonitor=false",
+	"-c", "core.hooksPath=/dev/null",
+	"-c", "diff.external=",
+	"-c", "core.sshCommand=",
+	"-c", "credential.helper=",
+	"-c", "core.pager=cat",
+	"-c", "uploadpack.packObjectsHook=",
+}
+
+// commandKeys are the config settings whose value git runs as a program.
+// A -c cannot clear the ones with a name in the middle (filter.<x>.clean,
+// diff.<x>.textconv), so a repository that sets one is left unknown instead:
+// `git status` runs a clean filter to see whether a file changed.
+var commandKeys = regexp.MustCompile(`(?i)^(core\.(fsmonitor|hookspath|sshcommand|pager|editor)|diff\.external|credential\.helper|uploadpack\.packobjectshook|alias\.|.*\.(clean|smudge|process|textconv)$)`)
+
+// configKeys bring in settings chonk never sees in this listing, or move
+// where the repository is, so a repository that sets one is left unknown
+// rather than reasoned about.
+var configKeys = regexp.MustCompile(`(?i)^(include\.path|includeif\.|core\.worktree|extensions\.worktreeconfig)`)
+
+// trustedPrograms are the programs a repository may legitimately name in its
+// own config. git-lfs is the reason this list exists: it is on nearly every
+// large repository, and refusing it would turn the feature off in practice.
+// git itself is not here -- `git --exec-path=<dir> x` runs binaries out of a
+// directory the repository chose -- and neither is anything else.
+var trustedPrograms = map[string]bool{"git-lfs": true}
+
+// trustedValues are settings whose value is not a program at all.
+// core.fsmonitor takes a boolean, where true means git's own monitor.
+var trustedValues = map[string]bool{
+	"": true, "true": true, "false": true, "0": true, "1": true, "yes": true, "no": true,
+}
+
+// programDirs are where a program a repository names may live. An absolute
+// path anywhere else is one the repository picked, which is the whole
+// problem: /tmp/x/git-lfs has the right name and is not git-lfs.
+var programDirs = []string{"/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/local/bin/", "/opt/homebrew/bin/", "/opt/local/bin/", "/run/current-system/sw/bin/"}
+
+// program is a plain program name or an absolute path to one.
+var program = regexp.MustCompile(`^(/[A-Za-z0-9._/-]*/)?[A-Za-z0-9._-]+$`)
+
+// Runner returns a Run that calls the real git, or nil when git is not
+// installed.
+func Runner(home string) Run {
+	git, err := reclaim.LookPath(home, "git")
+	if err != nil {
+		return nil
+	}
+	return func(ctx context.Context, dir string, args ...string) (string, error) {
+		cmd := exec.CommandContext(ctx, git, append(safeFlags, args...)...)
+		cmd.Dir = dir
+		cmd.Env = append(cmd.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
+		out, err := cmd.Output()
+		return strings.TrimSpace(string(out)), err
+	}
+}
+
+// Collect asks git about every dir, a few at a time. Each tree gets its own
+// deadline rather than a share of one budget: a slow repository must not
+// make the next one look clean because the time ran out.
+func Collect(ctx context.Context, run Run, dirs []string) map[string]owner.Git {
+	out := map[string]owner.Git{}
+	if run == nil || len(dirs) == 0 {
+		return out
+	}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, max(4, min(runtime.NumCPU(), 12)))
+	for _, dir := range dirs {
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			dctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			defer cancel()
+			g := of(dctx, run, dir)
+			mu.Lock()
+			out[dir] = g
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	return out
+}
+
+// remoteName is what a remote may be called for chonk to pass it back to
+// git. Anything else comes from .git/config and is not worth arguing with.
+var remoteName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// of asks git about one working tree. Every question that fails leaves the
+// state unknown rather than empty: an unanswered tree keeps the cautious
+// description it had, while a tree that looks clean because git never
+// answered would be offered for removal.
+func of(ctx context.Context, run Run, dir string) owner.Git {
+	var g owner.Git
+	// A remote that has the history is what makes a clone possible, so ask
+	// for it first: without one, nothing else changes the answer.
+	remotes, err := run(ctx, dir, "remote")
+	if err != nil {
+		return g
+	}
+	g.Known = true
+	// Before running anything that reads the working tree, see whether this
+	// repository's own config names a program for git to run. Reading the
+	// config runs nothing; `git status` would.
+	if cfg, err := run(ctx, dir, "config", "--local", "--list"); err != nil || namesAProgram(cfg) {
+		g.Known = false
+		return g
+	}
+	var chosen string
+	for name := range strings.SplitSeq(remotes, "\n") {
+		name = strings.TrimSpace(name)
+		if !remoteName.MatchString(name) {
+			continue
+		}
+		url, err := run(ctx, dir, "remote", "get-url", name)
+		if err != nil {
+			continue
+		}
+		if u := elsewhere(url); u != "" {
+			g.Remote, chosen = u, name
+			break
+		}
+	}
+	if g.Remote == "" {
+		return g
+	}
+
+	// --untracked-files: a repository can set status.showUntrackedFiles=no,
+	// and then a tree with new files in it reports as clean. The flag wins
+	// over the config.
+	out, err := run(ctx, dir, "status", "--porcelain", "--untracked-files=normal", "--ignored=traditional")
+	if err != nil {
+		g.Known = false
+		return g
+	}
+	for line := range strings.SplitSeq(out, "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		if path, ok := strings.CutPrefix(line, "!! "); ok {
+			g.Ignored = append(g.Ignored, path)
+			continue
+		}
+		g.Dirty++
+	}
+
+	// HEAD and --tags as well as --branches: a commit made on a detached
+	// HEAD, or left only under a tag, is on this disk and nowhere else.
+	// --remotes=<name>, not --remotes: a repository can have a second
+	// remote that is a directory on this disk, and a commit pushed only
+	// there is not somewhere else. The one being named is the one chonk
+	// offers as the way back.
+	out, err = run(ctx, dir, "log", "HEAD", "--branches", "--tags", "--not", "--remotes="+chosen, "--format=%h %D")
+	if err != nil {
+		g.Known = false
+		return g
+	}
+	g.Unpushed, g.Branches = unpushed(out)
+
+	out, err = run(ctx, dir, "stash", "list")
+	if err != nil {
+		g.Known = false
+		return g
+	}
+	if out != "" {
+		g.Stashes = len(strings.Split(out, "\n"))
+	}
+	return g
+}
+
+// namesAProgram reports whether a config listing sets a key whose value git
+// would run, naming a program that is not one chonk expects to be there, or
+// a key that hides such a setting from this listing.
+func namesAProgram(list string) bool {
+	for line := range strings.SplitSeq(list, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if configKeys.MatchString(key) {
+			return true
+		}
+		if !commandKeys.MatchString(key) {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if trustedValues[value] {
+			continue
+		}
+		// A shell operator anywhere makes the rest of the value reachable,
+		// however the value begins: `git-lfs clean -- %f; evil` would pass
+		// a check that only read the first word. An option that tells a
+		// program where to find its own binaries does the same.
+		if strings.ContainsAny(value, ";|&$`\n<>()") || strings.Contains(value, "--exec-path") {
+			return true
+		}
+		prog, _, _ := strings.Cut(value, " ")
+		if !program.MatchString(prog) {
+			return true
+		}
+		if strings.HasPrefix(prog, "/") {
+			var ok bool
+			for _, dir := range programDirs {
+				ok = ok || strings.HasPrefix(prog, dir) && !strings.Contains(prog[len(dir):], "/")
+			}
+			if !ok {
+				return true
+			}
+			_, prog, _ = strings.CutLast(prog, "/")
+		}
+		if !trustedPrograms[prog] {
+			return true
+		}
+	}
+	return false
+}
+
+// elsewhere is the remote URL with any credential stripped, when the remote
+// is somewhere other than this disk. A path or a file:// URL is another
+// directory on the same machine, which a scan may be about to clean out
+// too, so it is not somewhere the history is safe.
+func elsewhere(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	// The URL is shown as a `git clone` command to run, so it has to be an
+	// address and nothing else. git's own ext:: transport runs a command,
+	// and a value beginning with a dash would be read as an option.
+	// The value is printed as a command to run, so it is checked against
+	// what a URL may contain rather than against a list of what it may
+	// not: a denylist lets through whatever it did not think of, such as
+	// the `!` a shell expands. "::" is git's transport-helper form, as in
+	// ext::sh -c, which runs a command of the repository's choosing.
+	if !urlChars.MatchString(raw) || strings.HasPrefix(raw, "-") || strings.Contains(raw, "::") {
+		return ""
+	}
+	// scp-style, git@host:path/to.git: a host, so not this disk.
+	if !strings.Contains(raw, "://") {
+		host, path, ok := strings.Cut(raw, ":")
+		if !ok || path == "" || strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, ".") {
+			return ""
+		}
+		if _, h, hasUser := strings.CutLast(host, "@"); hasUser {
+			host = h
+		}
+		if !hostname.MatchString(host) {
+			return ""
+		}
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || !transports[u.Scheme] || !hostname.MatchString(u.Hostname()) {
+		return ""
+	}
+	// A URL can carry a token in its userinfo, and the remote is shown in
+	// the view and in --json, so it never keeps the credential.
+	if u.User != nil {
+		if name := u.User.Username(); name != "" {
+			u.User = url.User(name)
+		} else {
+			u.User = nil
+		}
+	}
+	return u.String()
+}
+
+// urlChars is what a remote URL may be made of. Everything a shell would
+// act on is absent, so the command chonk prints is the address and nothing
+// more.
+var urlChars = regexp.MustCompile(`^[A-Za-z0-9._~:/?#@%+=-]+$`)
+
+// transports are the schemes that name a server to clone from. git's ext::
+// and the local file:// are deliberately absent.
+var transports = map[string]bool{"https": true, "http": true, "ssh": true, "git": true}
+
+// hostname is a plain host or address, with nothing in it a shell or git
+// would read as anything else.
+var hostname = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$`)
+
+// unpushed counts the commits no remote has and names the branches they sit
+// on, from `--format=%h %D` lines: the hash makes every commit a non-empty
+// line to count, and %D carries the refs pointing at it, so the branch names
+// come out of the same walk. Only a commit at a branch tip is decorated,
+// which is why the count and the names are read separately.
+func unpushed(out string) (int, []string) {
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return 0, nil
+	}
+	var names []string
+	seen := map[string]bool{}
+	lines := strings.Split(out, "\n")
+	for _, line := range lines {
+		_, decor, _ := strings.Cut(line, " ")
+		for ref := range strings.SplitSeq(decor, ", ") {
+			ref = strings.TrimSpace(strings.TrimPrefix(ref, "HEAD -> "))
+			// A branch name may contain a slash, so only tags and the
+			// detached HEAD are dropped. By construction no remote ref can
+			// point at a commit this walk returned.
+			if ref == "" || ref == "HEAD" || strings.HasPrefix(ref, "tag: ") || seen[ref] {
+				continue
+			}
+			seen[ref] = true
+			names = append(names, ref)
+		}
+	}
+	return len(lines), names
+}

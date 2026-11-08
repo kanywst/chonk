@@ -85,10 +85,67 @@ var DockerDesktopEnv = []string{"DOCKER_HOST=unix://~/.docker/run/docker.sock"}
 
 var trimNote = "Space freed inside a VM only reaches macOS after a trim; chonk runs one afterwards when the VM supports it."
 
+// userTemp is this login's /var/folders container, set by the scan. The
+// rules for it cannot be written down ahead of time: its name is generated
+// per account.
+var userTemp string
+
+// SetUserTemp names the per-user temporary container the rules describe.
+func SetUserTemp(dir string) { userTemp = strings.TrimSuffix(dir, "/") }
+
+// UserTempDir is that container, for the places that must refuse to touch
+// it. Empty when the scan did not find one.
+func UserTempDir() string { return userTemp }
+
+// tempRules describe this login's /var/folders container: macOS's own cache
+// and temporary space, which no directory under the home explains.
+func tempRules() []rule {
+	if userTemp == "" {
+		return nil
+	}
+	return []rule{
+		// A code-sign clone is a second copy of a running app's whole
+		// bundle, so it is as large as the app and goes by itself.
+		each(userTemp+"/X", func(name string) Owner {
+			app := strings.TrimSuffix(name, ".code_sign_clone")
+			if app == name {
+				return Owner{
+					ID: "darwin-x:" + name, Name: name, Kind: KindCache, Safety: Careful,
+					Why: "Kept here by macOS for a running app.", Regen: "macOS makes it again when the app needs it.",
+				}
+			}
+			return Owner{
+				ID: "code-sign-clone:" + app, Name: prettyBundle(app) + " code-sign clone", Kind: KindCache, Safety: Careful,
+				Why:   "A copy macOS made of the whole " + prettyBundle(app) + " bundle to check its signature while it runs, so it is about as large as the app.",
+				Regen: "macOS removes it when the app quits, and makes it again on the next launch. Quitting the app is the way to get this space back.",
+			}
+		}),
+		// No Trash action on either: these are the live DARWIN_USER_CACHE_DIR
+		// and TMPDIR of every running process, and renaming one into the
+		// Trash pulls it out from under them. macOS only recreates it at
+		// the next login, so apps that write there fail until then.
+		at(userTemp+"/C", Owner{
+			ID: "darwin-user-cache", Name: "macOS per-user caches", Kind: KindCache, Safety: Danger,
+			Why:   "Where every running app puts its own caches, outside your home.",
+			Regen: "Each app fills its own part again, but this is the live cache directory: removing the directory itself breaks apps until the next login. Clear an app's own folder inside it instead.",
+		}),
+		at(userTemp+"/T", Owner{
+			ID: "darwin-user-temp", Name: "macOS per-user temporary files", Kind: KindCache, Safety: Danger,
+			Why:   "The TMPDIR of every process you are running.",
+			Regen: "Not all of it is abandoned: open sockets, downloads in flight and installer sessions live here, and this is the live directory, so removing it breaks running apps until the next login.",
+		}),
+		at(userTemp, Owner{
+			ID: "darwin-user-dir", Name: "macOS per-user temporary space", Kind: KindCache, Safety: Careful,
+			Why:   "The directory macOS gives your login for caches and temporary files, outside your home.",
+			Regen: "Apps fill it again as they run.",
+		}),
+	}
+}
+
 // rules are checked in order; the first that returns an owner claims the
 // directory and everything below it.
 func rules() []rule {
-	return []rule{
+	return append(tempRules(), []rule{
 		// VMs and container engines. These are the largest single items on a
 		// developer Mac, and the ones a directory listing explains worst.
 		at("~/Library/Application Support/rancher-desktop/lima", Owner{
@@ -236,6 +293,22 @@ func rules() []rule {
 		at("~/.claude", Owner{ID: "claude-code", Name: "Claude Code data", Kind: KindApp, Safety: Careful, Why: "Claude Code's settings, session transcripts (projects/), file history and plugins.", Regen: "Transcripts and file history are not recoverable."}),
 		at("~/.local/share/claude", Owner{ID: "claude-code-versions", Name: "Claude Code versions", Kind: KindToolchain, Safety: Safe, Why: "Claude Code's native installer keeps several downloaded versions to switch between.", Regen: "Old versions are not needed to run the current one."}),
 
+		// Outside the home directory: places with one known owner that a
+		// scan of your files alone never reaches.
+		at("/Library/Updates", Owner{
+			ID: "macos-updates", Name: "macOS installer downloads", Kind: KindSystem, Safety: Careful,
+			Why:   "Installers macOS downloaded for system updates. Usually ones already applied, but an update that is staged and still pending is here too.",
+			Regen: "An applied update's installer is downloaded again if it is ever needed; a pending one would download again before it can install. Most of this is protected by SIP, so removing it is Software Update's job, not `rm`'s.",
+		}),
+		// Swap and the sleep image sit in one directory as plain files, and
+		// a walk of directories cannot tell them apart, so they are named
+		// together and the difference is spelled out instead.
+		at("/private/var/vm", Owner{
+			ID: "vm-swap", Name: "Swap and sleep image", Kind: KindSystem, Safety: Danger,
+			Why:   "The swap macOS is paging memory out to, and sleepimage: what it wrote your memory into when it last hibernated, about as large as the RAM it saved.",
+			Regen: "Swap is in use and macOS sizes it itself. The sleep image is written again on the next hibernation, so removing it frees the space until then, but it is root-owned and SIP-protected, so it goes through `pmset hibernatemode` rather than `rm`.",
+		}),
+
 		// Trash.
 		at("~/.Trash", Owner{
 			ID: "trash", Name: "Trash", Kind: KindTrash, Safety: Danger,
@@ -290,7 +363,7 @@ func rules() []rule {
 		}),
 		at("~/.vscode", Owner{ID: "vscode-ext", Name: "VS Code extensions", Kind: KindApp, Safety: Careful, Why: "Installed VS Code extensions; old versions are kept after updates.", Regen: "Extensions are downloaded again."}),
 		at("~/Library", Owner{ID: "library", Name: "Library (other)", Kind: KindSystem, Safety: Careful, Why: "The rest of ~/Library: preferences, logs and app state.", Regen: "Leave it alone unless you know the app."}),
-	}
+	}...)
 }
 
 // prettyBundle turns com.spotify.client into "Spotify" and

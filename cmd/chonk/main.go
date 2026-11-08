@@ -22,9 +22,11 @@ import (
 
 	"github.com/kanywst/chonk/internal/demo"
 	"github.com/kanywst/chonk/internal/format"
+	"github.com/kanywst/chonk/internal/gitstate"
 	"github.com/kanywst/chonk/internal/history"
 	"github.com/kanywst/chonk/internal/inspect"
 	"github.com/kanywst/chonk/internal/owner"
+	"github.com/kanywst/chonk/internal/pins"
 	"github.com/kanywst/chonk/internal/procs"
 	"github.com/kanywst/chonk/internal/reclaim"
 	"github.com/kanywst/chonk/internal/scan"
@@ -33,6 +35,7 @@ import (
 	"github.com/kanywst/chonk/internal/tui"
 	"github.com/kanywst/chonk/internal/version"
 	"github.com/kanywst/chonk/internal/walk"
+	"github.com/kanywst/chonk/internal/workspaces"
 )
 
 const usage = `chonk shows what is eating your disk, why it exists, and the right way to
@@ -179,7 +182,7 @@ func (a *app) scan(ctx context.Context, errOut io.Writer) (*owner.Report, histor
 			}
 		}()
 	}
-	rep := scan.Run(ctx, scan.Roots(a.home), &prog)
+	rep := scan.Run(ctx, a.home, scan.Roots(a.home), &prog)
 	close(done)
 	time.Sleep(10 * time.Millisecond)
 	now := time.Now()
@@ -207,8 +210,19 @@ type jsonItem struct {
 	Parts       []jsonItem      `json:"parts,omitempty"`
 	Reclaimable int64           `json:"reclaimable_bytes,omitempty"`
 	Inspect     *inspect.Report `json:"inspect,omitempty"`
+	Git         *jsonGit        `json:"git,omitempty"`
 	SizeUnknown bool            `json:"size_unknown,omitempty"`
 	Processes   []procs.Proc    `json:"processes,omitempty"`
+}
+
+// jsonGit is what git says about a project, when chonk could ask.
+type jsonGit struct {
+	Remote   string   `json:"remote,omitempty"`
+	Dirty    int      `json:"dirty"`
+	Unpushed int      `json:"unpushed"`
+	Branches []string `json:"branches,omitempty"`
+	Stashes  int      `json:"stashes"`
+	Ignored  []string `json:"ignored_not_in_git,omitempty"`
 }
 
 type jsonAction struct {
@@ -225,6 +239,9 @@ func toJSON(it *owner.Item) jsonItem {
 		Why: it.Owner.Why, Regen: it.Owner.Regen, Hotspot: it.Hotspot, Reclaimable: it.Reclaimable(),
 		SizeUnknown: it.SizeUnknown,
 	}
+	if g := it.Git; g.Known {
+		j.Git = &jsonGit{Remote: g.Remote, Dirty: g.Dirty, Unpushed: g.Unpushed, Branches: g.Branches, Stashes: g.Stashes, Ignored: g.Ignored}
+	}
 	for _, ac := range it.Owner.Actions {
 		e := ac.Expand(it.Path)
 		j.Actions = append(j.Actions, jsonAction{Label: e.Label, Command: e.Command(), Safety: e.Safety.String(), Note: e.Note})
@@ -233,6 +250,17 @@ func toJSON(it *owner.Item) jsonItem {
 		j.Parts = append(j.Parts, toJSON(p))
 	}
 	return j
+}
+
+// nested are the projects the walk found strictly inside the target.
+func nested(rep *owner.Report, target *owner.Item) []*owner.Item {
+	var out []*owner.Item
+	for _, it := range rep.Items {
+		if it.Owner.Kind == owner.KindProject && strings.HasPrefix(it.Path, target.Path+"/") {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 func writeJSON(out io.Writer, v any) error {
@@ -291,7 +319,7 @@ func (a *app) ls(ctx context.Context, out, errOut io.Writer) error {
 			}
 			extra := ""
 			if r := it.Reclaimable(); r > 0 {
-				extra = format.Bytes(r) + " build output"
+				extra = format.Bytes(r) + " " + it.Reclaim()
 			}
 			if it.Node != nil && it.Node.Denied {
 				extra = "unreadable (give the terminal Full Disk Access)"
@@ -339,7 +367,8 @@ func (a *app) why(ctx context.Context, path string, out io.Writer) error {
 	target := &owner.Item{Owner: o, Path: claimed, Node: n, Size: n.Size, Logical: n.Logical, Files: n.Files}
 	// Classify what was walked, so the size leaves out what other rules or
 	// nested projects claim inside it, the same as `chonk ls`.
-	for _, it := range owner.Classify(nodes, owner.Options{}).Items {
+	inside := owner.Classify(nodes, owner.Options{})
+	for _, it := range inside.Items {
 		if it.Path == claimed && it.Owner.ID == o.ID {
 			target.Size, target.Parts = it.Size, it.Parts
 		}
@@ -347,6 +376,16 @@ func (a *app) why(ctx context.Context, path string, out io.Writer) error {
 	if n.Touched > 0 {
 		target.Touched = time.Unix(n.Touched, 0)
 	}
+	// Ask git the same question `chonk ls` asks, so one project is
+	// described the same way whichever command you reach it through.
+	// Ask about the projects found inside too, not just the target: a
+	// repository nested in it decides whether the target can go, and `ls`
+	// takes them into account.
+	rep := &owner.Report{Items: append([]*owner.Item{target}, nested(inside, target)...)}
+	rep.ApplyGit(gitstate.Collect(ctx, gitstate.Runner(a.home), rep.Projects()))
+	pins.Apply(rep, pins.Collect(a.home, pins.Discover(a.home)))
+	workspaces.Apply(rep)
+	o = target.Owner
 	rpt := inspect.New(a.home).Inspect(ctx, target)
 	ps, _ := procs.List(ctx, procs.Exec)
 	running := procs.Match([]*owner.Item{target}, ps, a.home)[target]

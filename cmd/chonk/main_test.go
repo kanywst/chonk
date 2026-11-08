@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
 	"strings"
 	"testing"
 )
@@ -41,7 +42,14 @@ func TestRun(t *testing.T) {
 
 func TestWhyJSON(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	dir := t.TempDir()
+	// Not t.TempDir(): on macOS that sits in this login's /var/folders
+	// container, which chonk now scans and claims, so it would not be
+	// unclaimed. /tmp belongs to no owner on either system.
+	dir, err := os.MkdirTemp("/tmp", "chonk-why")
+	if err != nil {
+		t.Skipf("cannot make a directory outside the per-user temp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
 	var out bytes.Buffer
 	if err := run(context.Background(), []string{"why", dir, "--json"}, &out, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)

@@ -59,9 +59,10 @@ const (
 
 func (s Safety) String() string { return [...]string{"safe", "careful", "danger"}[s] }
 
-// Action is one way to reclaim an item. Cmd and Dir may use {path},
-// {parent} and {name}, which expand to the item's path, its parent and its
-// base name.
+// Action is one way to reclaim an item. Cmd, Dir and Env may use {path},
+// {parent}, {grandparent} and {name}, which expand to the item's path, its
+// parent, its parent's parent and its base name. {grandparent} is what a
+// version manager's root is, two levels above one installed version.
 type Action struct {
 	Label  string   `json:"label"`
 	Cmd    []string `json:"cmd,omitempty"`
@@ -81,7 +82,12 @@ type Action struct {
 
 // Expand fills in the placeholders for path.
 func (a Action) Expand(path string) Action {
-	r := strings.NewReplacer("{path}", path, "{parent}", parentOf(path), "{name}", baseOf(path))
+	r := strings.NewReplacer(
+		"{path}", path,
+		"{grandparent}", parentOf(parentOf(path)),
+		"{parent}", parentOf(path),
+		"{name}", baseOf(path),
+	)
 	out := a
 	out.Cmd = make([]string, len(a.Cmd))
 	for i, c := range a.Cmd {
@@ -155,18 +161,31 @@ type Item struct {
 	Parts []*Item
 	// Project is the project an artifact belongs to.
 	Project *Item
+	// Git is what git says about a project's working tree.
+	Git Git
+	// PartsLabel says what the Parts are, for the one-line annotation in
+	// the view. Empty means build output.
+	PartsLabel string
 	// SizeUnknown is set when nothing can say how big the item is until it
 	// is gone, such as APFS snapshots.
 	SizeUnknown bool
 }
 
-// Reclaimable is how much of a project its build outputs take.
+// Reclaimable is how much of an item its removable parts take.
 func (it *Item) Reclaimable() int64 {
 	var n int64
 	for _, p := range it.Parts {
 		n += p.Size
 	}
 	return n
+}
+
+// Reclaim is how the view annotates the size of the removable parts.
+func (it *Item) Reclaim() string {
+	if it.PartsLabel != "" {
+		return it.PartsLabel
+	}
+	return "build output"
 }
 
 // Name is how the view labels the item.

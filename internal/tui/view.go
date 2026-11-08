@@ -207,7 +207,7 @@ func (m model) itemLine(it *owner.Item, cur bool, biggest int64, w int) string {
 		tags = append(tags, st.faint.Render("looking inside…"))
 	}
 	if rc := it.Reclaimable(); rc > 0 {
-		tags = append(tags, st.dim.Render(format.Bytes(rc)+" build output"))
+		tags = append(tags, st.dim.Render(format.Bytes(rc)+" "+it.Reclaim()))
 	}
 	if ps := m.procsOf[it]; len(ps) > 0 {
 		tags = append(tags, st.warn.Render("▶ "+format.Bytes(procs.Total(ps))+" running"))
