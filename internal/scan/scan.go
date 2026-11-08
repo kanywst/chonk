@@ -21,7 +21,12 @@ import (
 // Roots are the places chonk looks: your home, apps, and where package
 // managers install to. Ones that do not exist are skipped.
 func Roots(home string) []string {
-	return []string{home, "/Applications", "/opt/homebrew", "/usr/local", "/nix"}
+	return []string{
+		home, "/Applications", "/opt/homebrew", "/usr/local", "/nix",
+		// Outside your files, but with one known owner and a real size:
+		// applied update installers, and the hibernation image.
+		"/Library/Updates", "/private/var/vm",
+	}
 }
 
 // Run walks roots and classifies them. Local APFS snapshots, which no

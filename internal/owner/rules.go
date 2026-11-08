@@ -236,6 +236,22 @@ func rules() []rule {
 		at("~/.claude", Owner{ID: "claude-code", Name: "Claude Code data", Kind: KindApp, Safety: Careful, Why: "Claude Code's settings, session transcripts (projects/), file history and plugins.", Regen: "Transcripts and file history are not recoverable."}),
 		at("~/.local/share/claude", Owner{ID: "claude-code-versions", Name: "Claude Code versions", Kind: KindToolchain, Safety: Safe, Why: "Claude Code's native installer keeps several downloaded versions to switch between.", Regen: "Old versions are not needed to run the current one."}),
 
+		// Outside the home directory: places with one known owner that a
+		// scan of your files alone never reaches.
+		at("/Library/Updates", Owner{
+			ID: "macos-updates", Name: "macOS installer downloads", Kind: KindSystem, Safety: Safe,
+			Why:   "Installers macOS downloaded to apply system updates, kept after the update is done.",
+			Regen: "Downloaded again if an update needs them. Removing them needs root: `sudo rm -rf /Library/Updates/*`.",
+		}),
+		// Swap and the sleep image sit in one directory as plain files, and
+		// a walk of directories cannot tell them apart, so they are named
+		// together and the difference is spelled out instead.
+		at("/private/var/vm", Owner{
+			ID: "vm-swap", Name: "Swap and sleep image", Kind: KindSystem, Safety: Danger,
+			Why:   "The swap macOS is paging memory out to, and sleepimage: what it wrote your memory into when it last hibernated, about as large as the RAM it saved.",
+			Regen: "Swap is in use and macOS sizes it itself. The sleep image is written again on the next hibernation, and removing it does not turn hibernation off: `sudo rm /private/var/vm/sleepimage`, which needs root.",
+		}),
+
 		// Trash.
 		at("~/.Trash", Owner{
 			ID: "trash", Name: "Trash", Kind: KindTrash, Safety: Danger,
