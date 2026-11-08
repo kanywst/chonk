@@ -85,10 +85,51 @@ var DockerDesktopEnv = []string{"DOCKER_HOST=unix://~/.docker/run/docker.sock"}
 
 var trimNote = "Space freed inside a VM only reaches macOS after a trim; chonk runs one afterwards when the VM supports it."
 
+// userTemp is this login's /var/folders container, set by the scan. The
+// rules for it cannot be written down ahead of time: its name is generated
+// per account.
+var userTemp string
+
+// SetUserTemp names the per-user temporary container the rules describe.
+func SetUserTemp(dir string) { userTemp = strings.TrimSuffix(dir, "/") }
+
+// tempRules describe this login's /var/folders container: macOS's own cache
+// and temporary space, which no directory under the home explains.
+func tempRules() []rule {
+	if userTemp == "" {
+		return nil
+	}
+	return []rule{
+		// A code-sign clone is a second copy of a running app's whole
+		// bundle, so it is as large as the app and goes by itself.
+		each(userTemp+"/X", func(name string) Owner {
+			app := strings.TrimSuffix(name, ".code_sign_clone")
+			if app == name {
+				return Owner{
+					ID: "darwin-x:" + name, Name: name, Kind: KindCache, Safety: Careful,
+					Why: "Kept here by macOS for a running app.", Regen: "macOS makes it again when the app needs it.",
+				}
+			}
+			return Owner{
+				ID: "code-sign-clone:" + app, Name: prettyBundle(app) + " code-sign clone", Kind: KindCache, Safety: Careful,
+				Why:   "A copy macOS made of the whole " + prettyBundle(app) + " bundle to check its signature while it runs, so it is about as large as the app.",
+				Regen: "macOS removes it when the app quits, and makes it again on the next launch. Quitting the app is the way to get this space back.",
+			}
+		}),
+		at(userTemp+"/C", cache("darwin-user-cache", "macOS per-user caches", "Each app fills its own part again as it runs.")),
+		at(userTemp+"/T", cache("darwin-user-temp", "macOS per-user temporary files", "Whatever still needs its file writes it again; the rest was already abandoned.")),
+		at(userTemp, Owner{
+			ID: "darwin-user-dir", Name: "macOS per-user temporary space", Kind: KindCache, Safety: Careful,
+			Why:   "The directory macOS gives your login for caches and temporary files, outside your home.",
+			Regen: "Apps fill it again as they run.",
+		}),
+	}
+}
+
 // rules are checked in order; the first that returns an owner claims the
 // directory and everything below it.
 func rules() []rule {
-	return []rule{
+	return append(tempRules(), []rule{
 		// VMs and container engines. These are the largest single items on a
 		// developer Mac, and the ones a directory listing explains worst.
 		at("~/Library/Application Support/rancher-desktop/lima", Owner{
@@ -306,7 +347,7 @@ func rules() []rule {
 		}),
 		at("~/.vscode", Owner{ID: "vscode-ext", Name: "VS Code extensions", Kind: KindApp, Safety: Careful, Why: "Installed VS Code extensions; old versions are kept after updates.", Regen: "Extensions are downloaded again."}),
 		at("~/Library", Owner{ID: "library", Name: "Library (other)", Kind: KindSystem, Safety: Careful, Why: "The rest of ~/Library: preferences, logs and app state.", Regen: "Leave it alone unless you know the app."}),
-	}
+	}...)
 }
 
 // prettyBundle turns com.spotify.client into "Spotify" and
