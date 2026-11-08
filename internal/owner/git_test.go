@@ -28,7 +28,7 @@ func TestGitDescribe(t *testing.T) {
 			name: "clean and pushed is careful, with the way back",
 			git:  Git{Known: true, Remote: remote},
 			want: Careful,
-			says: []string{"git clone " + remote, "still there"},
+			says: []string{"git clone " + remote, "last fetch"},
 		},
 		{
 			name:  "ignored build output chonk already lists is not held against it",
@@ -141,6 +141,58 @@ func TestApplyGitNeverTrashesAScanRoot(t *testing.T) {
 	rep.ApplyGit(map[string]Git{"/h": {Known: true, Remote: "git@h:o/r.git"}})
 	if len(rep.Items[0].Owner.Actions) != 0 {
 		t.Errorf("a scan root was offered %v", rep.Items[0].Owner.Actions)
+	}
+}
+
+// Removing a project takes the repositories inside it too, and git was
+// asked only about the outer tree.
+func TestApplyGitAccountsForNestedRepositories(t *testing.T) {
+	parent := &walk.Node{Name: "/h"}
+	outer := &Item{Owner: new(projectOwner), Path: "/h/p", Node: &walk.Node{Name: "p", Parent: parent}}
+	inner := &Item{Owner: new(projectOwner), Path: "/h/p/vendor/x", Node: &walk.Node{Name: "x", Parent: parent}}
+	rep := &Report{Items: []*Item{outer, inner}}
+
+	clean := Git{Known: true, Remote: "git@h:o/r.git"}
+	rep.ApplyGit(map[string]Git{
+		"/h/p":          clean,
+		"/h/p/vendor/x": {Known: true, Remote: "git@h:o/x.git", Unpushed: 1},
+	})
+	if outer.Owner.Safety != Danger {
+		t.Errorf("outer safety = %v, want danger", outer.Owner.Safety)
+	}
+	for _, a := range outer.Owner.Actions {
+		if a.Trash {
+			t.Error("a project holding unpushed work in a nested repository was offered for the Trash")
+		}
+	}
+	if !strings.Contains(outer.Owner.Regen, "vendor/x") {
+		t.Errorf("regen does not name the nested repository: %q", outer.Owner.Regen)
+	}
+
+	// With the nested repository clean too, the outer one can go.
+	outer.Owner = new(projectOwner)
+	rep.ApplyGit(map[string]Git{"/h/p": clean, "/h/p/vendor/x": clean})
+	var offered bool
+	for _, a := range outer.Owner.Actions {
+		offered = offered || a.Trash
+	}
+	if !offered {
+		t.Error("a project whose nested repositories are all clean was not offered for removal")
+	}
+}
+
+// A nested repository chonk could not ask about is not accounted for, so
+// the outer one is not offered either.
+func TestApplyGitTreatsAnUnknownNestedRepoAsHeldWork(t *testing.T) {
+	parent := &walk.Node{Name: "/h"}
+	outer := &Item{Owner: new(projectOwner), Path: "/h/p", Node: &walk.Node{Name: "p", Parent: parent}}
+	inner := &Item{Owner: new(projectOwner), Path: "/h/p/n", Node: &walk.Node{Name: "n", Parent: parent}}
+	rep := &Report{Items: []*Item{outer, inner}}
+	rep.ApplyGit(map[string]Git{"/h/p": {Known: true, Remote: "git@h:o/r.git"}})
+	for _, a := range outer.Owner.Actions {
+		if a.Trash {
+			t.Error("a project with an unexamined nested repository was offered for the Trash")
+		}
 	}
 }
 

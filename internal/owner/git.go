@@ -49,7 +49,7 @@ func (g Git) describe(parts []*Item) (Safety, string, string) {
 	// clone is a step you take, needing the network and the remote to still
 	// be there. What is clean is also only clean as of this scan.
 	left := g.unexplained(parts)
-	clone := "`git clone " + g.Remote + "` brings the history back, as long as that remote is still there"
+	clone := "`git clone " + g.Remote + "` brings the history back, as long as that remote still has what your last fetch saw"
 	if len(left) == 0 {
 		return Careful, "A git working tree that was clean and fully pushed when this scan ran.",
 			clone + "; the build output inside is rebuilt."
@@ -125,10 +125,8 @@ func list(ss []string) string {
 // are keyed by the project's path; a project with no entry keeps the
 // cautious description it already has.
 func (r *Report) ApplyGit(states map[string]Git) {
-	for _, it := range r.Items {
-		if it.Owner.Kind != KindProject {
-			continue
-		}
+	projects := r.ByKind(KindProject)
+	for _, it := range projects {
 		g, ok := states[it.Path]
 		if !ok {
 			continue
@@ -136,6 +134,16 @@ func (r *Report) ApplyGit(states map[string]Git) {
 		it.Git = g
 		o := *it.Owner
 		o.Safety, o.Why, o.Regen = g.describe(it.Parts)
+		// Removing a project takes everything under it, and git was asked
+		// only about this tree: a repository nested inside, a submodule or
+		// a clone kept in an ignored directory, answers for itself. Say so
+		// and offer nothing while one of those still holds work.
+		if keep := heldInside(it, projects, states); keep != "" {
+			o.Safety = Danger
+			o.Regen = "Removing this takes " + Tilde(keep) + " with it, which has work only this disk has."
+			it.Owner = &o
+			continue
+		}
 		// A scan root is never offered for removal, whatever git says about
 		// it: a dotfiles repository at ~, or a /usr/local that is a
 		// checkout, is a root first. Classify drops the actions of a root
@@ -145,6 +153,22 @@ func (r *Report) ApplyGit(states map[string]Git) {
 		}
 		it.Owner = &o
 	}
+}
+
+// heldInside names a repository nested under it that would go too and is
+// not safe to lose: one with work only this disk has, or one git could not
+// answer for. It returns "" when everything inside is accounted for.
+func heldInside(it *Item, projects []*Item, states map[string]Git) string {
+	for _, other := range projects {
+		if other == it || !strings.HasPrefix(other.Path, it.Path+"/") {
+			continue
+		}
+		g, ok := states[other.Path]
+		if !ok || !g.Known || g.Remote == "" || !g.clean() {
+			return other.Path
+		}
+	}
+	return ""
 }
 
 // isRoot reports whether the item is a whole scan root.

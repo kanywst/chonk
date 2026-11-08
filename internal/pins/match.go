@@ -85,13 +85,20 @@ func apply(it *owner.Item, m manager, s Set) {
 	// default gets the same treatment: nvm's default is often the alias
 	// "node", which stands for whichever version is newest, and calling
 	// that one unpinned would point at the version in use.
-	pins := s.Wanted[m.tool]
-	var def []string
+	// Both sides go through version(): a pin can name a toolchain the way
+	// it is installed, with its target triple ("1.90.0-aarch64-apple-darwin"),
+	// which is what rustup writes for a default and for a per-directory
+	// override. Comparing that raw against "1.90.0" matches nothing, and
+	// the version it names would be offered for uninstall.
+	var pins, def []string
+	for _, p := range s.Wanted[m.tool] {
+		pins = append(pins, version(m.tool, p))
+	}
 	for _, d := range s.Default[m.tool] {
 		def = append(def, version(m.tool, d))
 	}
 	for _, p := range slices.Concat(pins, def) {
-		if !isVersion(p) {
+		if !isVersion(m.tool, p) {
 			return
 		}
 	}
@@ -174,19 +181,22 @@ func version(tool, name string) string {
 }
 
 // isVersion reports whether a pin is a version chonk can compare, rather
-// than an alias whose meaning only its manager knows.
-func isVersion(pin string) bool {
+// than an alias whose meaning only its manager knows. The channel words
+// belong to rust: for node or python, a bare word is an alias.
+func isVersion(tool, pin string) bool {
 	if pin == "" {
 		return false
 	}
-	switch pin {
-	case "stable", "beta", "nightly":
-		return true
+	if tool == "rust" {
+		switch pin {
+		case "stable", "beta", "nightly":
+			return true
+		}
 	}
 	if strings.ContainsAny(pin, "/*<>= ") {
 		return false
 	}
-	// A bare channel word ("node", "lts", "latest", "system") is an alias.
+	// A bare word ("node", "lts", "latest", "system") is an alias.
 	return pin[0] >= '0' && pin[0] <= '9'
 }
 

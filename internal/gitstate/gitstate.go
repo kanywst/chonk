@@ -28,6 +28,27 @@ var safeFlags = []string{
 	"--no-optional-locks",
 	"-c", "core.fsmonitor=false",
 	"-c", "core.hooksPath=/dev/null",
+	"-c", "diff.external=",
+	"-c", "core.sshCommand=",
+	"-c", "credential.helper=",
+	"-c", "core.pager=cat",
+	"-c", "uploadpack.packObjectsHook=",
+}
+
+// commandKeys are the config settings whose value git runs as a program.
+// A -c cannot clear the ones with a name in the middle (filter.<x>.clean,
+// diff.<x>.textconv), so a repository that sets one is left unknown instead:
+// `git status` runs a clean filter to see whether a file changed.
+var commandKeys = regexp.MustCompile(`(?i)^(core\.(fsmonitor|hookspath|sshcommand|pager|editor)|diff\.external|credential\.helper|uploadpack\.packobjectshook|alias\.|filter\..*\.(clean|smudge|process)$|diff\..*\.textconv$|.*\.(clean|smudge|process|textconv)$)`)
+
+// trustedPrograms are the programs a repository may legitimately name in its
+// own config. git-lfs is on nearly every large repository, and its filter is
+// the reason this list exists at all. The booleans are there because
+// core.fsmonitor takes one: true means git's own built-in monitor, not a
+// program of someone's choosing.
+var trustedPrograms = map[string]bool{
+	"git-lfs": true, "git": true, "cat": true, "": true,
+	"true": true, "false": true, "0": true, "1": true, "yes": true, "no": true,
 }
 
 // Runner returns a Run that calls the real git, or nil when git is not
@@ -90,6 +111,13 @@ func of(ctx context.Context, run Run, dir string) owner.Git {
 		return g
 	}
 	g.Known = true
+	// Before running anything that reads the working tree, see whether this
+	// repository's own config names a program for git to run. Reading the
+	// config runs nothing; `git status` would.
+	if cfg, err := run(ctx, dir, "config", "--local", "--list"); err != nil || namesAProgram(cfg) {
+		g.Known = false
+		return g
+	}
 	for name := range strings.SplitSeq(remotes, "\n") {
 		name = strings.TrimSpace(name)
 		if !remoteName.MatchString(name) {
@@ -108,7 +136,10 @@ func of(ctx context.Context, run Run, dir string) owner.Git {
 		return g
 	}
 
-	out, err := run(ctx, dir, "status", "--porcelain", "--ignored=traditional")
+	// --untracked-files: a repository can set status.showUntrackedFiles=no,
+	// and then a tree with new files in it reports as clean. The flag wins
+	// over the config.
+	out, err := run(ctx, dir, "status", "--porcelain", "--untracked-files=normal", "--ignored=traditional")
 	if err != nil {
 		g.Known = false
 		return g
@@ -142,6 +173,29 @@ func of(ctx context.Context, run Run, dir string) owner.Git {
 		g.Stashes = len(strings.Split(out, "\n"))
 	}
 	return g
+}
+
+// namesAProgram reports whether a config listing sets a key whose value git
+// would run, naming a program that is not one chonk expects to be there.
+func namesAProgram(list string) bool {
+	for line := range strings.SplitSeq(list, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || !commandKeys.MatchString(strings.TrimSpace(key)) {
+			continue
+		}
+		prog, _, _ := strings.Cut(strings.TrimSpace(value), " ")
+		if !trustedPrograms[prog] && !trustedPrograms[baseOf(prog)] {
+			return true
+		}
+	}
+	return false
+}
+
+func baseOf(p string) string {
+	if _, last, ok := strings.CutLast(p, "/"); ok {
+		return last
+	}
+	return p
 }
 
 // elsewhere is the remote URL with any credential stripped, when the remote

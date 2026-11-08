@@ -27,6 +27,7 @@ func TestOfCleanAndPushed(t *testing.T) {
 	g := of(context.Background(), fake(t, map[string]string{
 		"remote":         "origin",
 		"remote get-url": "https://github.com/o/r.git",
+		"config":         "",
 		"status":         "",
 		"log":            "",
 		"stash":          "",
@@ -46,6 +47,7 @@ func TestOfCountsAndSeparatesIgnored(t *testing.T) {
 	g := of(context.Background(), fake(t, map[string]string{
 		"remote":         "origin",
 		"remote get-url": "git@h:o/r.git",
+		"config":         "",
 		// Ignored entries must not be counted as uncommitted work.
 		"status": " M a.go\n?? b.go\n!! target/\n!! .env",
 		"log":    "aaa111 HEAD -> feat/x, feat/x",
@@ -68,7 +70,7 @@ func TestOfCountsAndSeparatesIgnored(t *testing.T) {
 // Without a remote nothing can bring the repository back, so chonk stops
 // asking: the answer cannot change.
 func TestOfNoRemote(t *testing.T) {
-	g := of(context.Background(), fake(t, map[string]string{"remote": ""}), "/p")
+	g := of(context.Background(), fake(t, map[string]string{"remote": "", "config": ""}), "/p")
 	if !g.Known || g.Remote != "" {
 		t.Fatalf("got %+v", g)
 	}
@@ -91,6 +93,7 @@ func TestOfFailuresAreUnknownNotClean(t *testing.T) {
 	base := map[string]string{
 		"remote":         "origin",
 		"remote get-url": "git@h:o/r.git",
+		"config":         "",
 		"status":         "",
 		"log":            "",
 		"stash":          "",
@@ -206,7 +209,7 @@ func TestUnpushed(t *testing.T) {
 }
 
 func TestCollectIsKeyedByDirAndSkipsWithoutGit(t *testing.T) {
-	run := fake(t, map[string]string{"remote": ""})
+	run := fake(t, map[string]string{"remote": "", "config": ""})
 	got := Collect(context.Background(), run, []string{"/a", "/b"})
 	if len(got) != 2 {
 		t.Fatalf("got %d states, want 2", len(got))
@@ -216,5 +219,90 @@ func TestCollectIsKeyedByDirAndSkipsWithoutGit(t *testing.T) {
 	}
 	if n := len(Collect(context.Background(), nil, []string{"/a"})); n != 0 {
 		t.Errorf("without git, got %d states", n)
+	}
+}
+
+// A repository can hide its own untracked files with
+// status.showUntrackedFiles=no, so the flag has to override the config.
+func TestOfOverridesUntrackedFilesConfig(t *testing.T) {
+	var got []string
+	run := func(_ context.Context, _ string, args ...string) (string, error) {
+		if args[0] == "status" {
+			got = args
+		}
+		if args[0] == "remote" && len(args) > 1 {
+			return "git@h:o/r.git", nil
+		}
+		if args[0] == "remote" {
+			return "origin", nil
+		}
+		return "", nil
+	}
+	of(context.Background(), run, "/p")
+	if !slices.Contains(got, "--untracked-files=normal") {
+		t.Errorf("status args %q do not override showUntrackedFiles", got)
+	}
+}
+
+// `git status` runs a clean filter to see whether a file changed, and a -c
+// cannot clear a key with a name in the middle. A repository that configures
+// one is left unknown rather than run in.
+func TestNamesAProgram(t *testing.T) {
+	bad := []string{
+		"core.fsmonitor=/tmp/evil",
+		"filter.x.clean=/tmp/evil",
+		"filter.x.process=sh -c id",
+		"diff.x.textconv=/tmp/evil",
+		"core.hookspath=/tmp/hooks",
+		"credential.helper=/tmp/evil",
+		"alias.st=!/tmp/evil",
+		"core.sshcommand=/tmp/evil",
+	}
+	for _, line := range bad {
+		if !namesAProgram(line) {
+			t.Errorf("%q was not recognised as naming a program", line)
+		}
+	}
+	// git-lfs is on nearly every large repository, and ordinary settings
+	// must not make a tree unknown.
+	ok := []string{
+		"filter.lfs.clean=git-lfs clean -- %f",
+		"filter.lfs.process=git-lfs filter-process",
+		"filter.lfs.smudge=/opt/homebrew/bin/git-lfs smudge -- %f",
+		"remote.origin.url=git@h:o/r.git",
+		"core.bare=false",
+		"core.fsmonitor=false",
+		"",
+	}
+	for _, line := range ok {
+		if namesAProgram(line) {
+			t.Errorf("%q was wrongly recognised as naming a program", line)
+		}
+	}
+}
+
+// A repository whose config names a program is never run in: not status,
+// not log, nothing.
+func TestOfSkipsRepositoriesThatNameAProgram(t *testing.T) {
+	var ran []string
+	run := func(_ context.Context, _ string, args ...string) (string, error) {
+		ran = append(ran, args[0])
+		switch args[0] {
+		case "remote":
+			if len(args) > 1 {
+				return "git@h:o/r.git", nil
+			}
+			return "origin", nil
+		case "config":
+			return "filter.evil.clean=/tmp/evil", nil
+		}
+		return "", nil
+	}
+	g := of(context.Background(), run, "/p")
+	if g.Known {
+		t.Error("a repository that names a program was reported as known")
+	}
+	if slices.Contains(ran, "status") || slices.Contains(ran, "log") {
+		t.Errorf("chonk ran %q inside it anyway", ran)
 	}
 }

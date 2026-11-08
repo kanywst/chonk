@@ -84,15 +84,24 @@ func TestVersion(t *testing.T) {
 	}
 }
 
-func TestComparable(t *testing.T) {
-	for _, p := range []string{"22", "1.90.0", "stable", "nightly", "beta"} {
-		if !isVersion(p) {
+func TestIsVersion(t *testing.T) {
+	for _, p := range []string{"22", "1.90.0"} {
+		if !isVersion("node", p) {
 			t.Errorf("%q should be a comparable version", p)
+		}
+	}
+	// The channel words are rust's; for node they are aliases.
+	for _, p := range []string{"stable", "nightly", "beta"} {
+		if !isVersion("rust", p) {
+			t.Errorf("rust %q should be a comparable version", p)
+		}
+		if isVersion("node", p) {
+			t.Errorf("node %q should not be a comparable version", p)
 		}
 	}
 	// Aliases only the manager can resolve must stop the whole check.
 	for _, p := range []string{"lts/*", "node", "latest", "system", "", ">=20"} {
-		if isVersion(p) {
+		if isVersion("node", p) {
 			t.Errorf("%q should not be a comparable version", p)
 		}
 	}
@@ -279,6 +288,19 @@ func TestRustupOverridesCount(t *testing.T) {
 	s := Collect(home, nil)
 	if !slices.Contains(s.Wanted["rust"], "1.90.0-aarch64-apple-darwin") {
 		t.Errorf("rust pins = %q, want the override", s.Wanted["rust"])
+	}
+
+	// An override names the toolchain the way it is installed, with its
+	// target triple. It has to protect that toolchain from being offered
+	// for uninstall, which means normalising both sides.
+	n := tree("/h/.rustup", []string{"toolchains"}, map[string]int64{
+		"stable-aarch64-apple-darwin": 10,
+		"1.90.0-aarch64-apple-darwin": 20,
+	})
+	it := item("rustup", n)
+	Apply(&owner.Report{Items: []*owner.Item{it}}, s)
+	if len(it.Parts) != 0 {
+		t.Errorf("an overridden toolchain was offered for uninstall: %d parts", len(it.Parts))
 	}
 }
 
