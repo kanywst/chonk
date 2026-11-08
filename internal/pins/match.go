@@ -1,6 +1,7 @@
 package pins
 
 import (
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -193,12 +194,14 @@ func isVersion(tool, pin string) bool {
 			return true
 		}
 	}
-	if strings.ContainsAny(pin, "/*<>= ") {
-		return false
-	}
-	// A bare word ("node", "lts", "latest", "system") is an alias.
-	return pin[0] >= '0' && pin[0] <= '9'
+	// Only digits and dots: that is a version to compare against. It turns
+	// away a bare word ("node", "lts", "latest", "system"), a range
+	// (">=20"), and a wildcard like "22.x", which names a whole line of
+	// versions rather than the one it looks like.
+	return plainVersion.MatchString(pin)
 }
+
+var plainVersion = regexp.MustCompile(`^[0-9]+(\.[0-9]+)*$`)
 
 // installedName reports whether a directory beside a manager's versions
 // looks like one: a plain version, never something git or a shell would

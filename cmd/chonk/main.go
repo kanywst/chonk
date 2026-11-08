@@ -252,6 +252,17 @@ func toJSON(it *owner.Item) jsonItem {
 	return j
 }
 
+// nested are the projects the walk found strictly inside the target.
+func nested(rep *owner.Report, target *owner.Item) []*owner.Item {
+	var out []*owner.Item
+	for _, it := range rep.Items {
+		if it.Owner.Kind == owner.KindProject && strings.HasPrefix(it.Path, target.Path+"/") {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
 func writeJSON(out io.Writer, v any) error {
 	return json.MarshalWrite(out, v, jsontext.WithIndent("  "))
 }
@@ -356,7 +367,8 @@ func (a *app) why(ctx context.Context, path string, out io.Writer) error {
 	target := &owner.Item{Owner: o, Path: claimed, Node: n, Size: n.Size, Logical: n.Logical, Files: n.Files}
 	// Classify what was walked, so the size leaves out what other rules or
 	// nested projects claim inside it, the same as `chonk ls`.
-	for _, it := range owner.Classify(nodes, owner.Options{}).Items {
+	inside := owner.Classify(nodes, owner.Options{})
+	for _, it := range inside.Items {
 		if it.Path == claimed && it.Owner.ID == o.ID {
 			target.Size, target.Parts = it.Size, it.Parts
 		}
@@ -366,7 +378,10 @@ func (a *app) why(ctx context.Context, path string, out io.Writer) error {
 	}
 	// Ask git the same question `chonk ls` asks, so one project is
 	// described the same way whichever command you reach it through.
-	rep := &owner.Report{Items: []*owner.Item{target}}
+	// Ask about the projects found inside too, not just the target: a
+	// repository nested in it decides whether the target can go, and `ls`
+	// takes them into account.
+	rep := &owner.Report{Items: append([]*owner.Item{target}, nested(inside, target)...)}
 	rep.ApplyGit(gitstate.Collect(ctx, gitstate.Runner(a.home), rep.Projects()))
 	pins.Apply(rep, pins.Collect(a.home, pins.Discover(a.home)))
 	workspaces.Apply(rep)

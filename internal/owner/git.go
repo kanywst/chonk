@@ -2,6 +2,7 @@ package owner
 
 import (
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -171,8 +172,25 @@ func heldInside(it *Item, projects []*Item, states map[string]Git) string {
 	return ""
 }
 
+// roots are the scan roots, so a project that is one can be recognised from
+// its path rather than from the shape of a walk. `chonk why` walks only the
+// directory it was asked about, where every node is parentless, and judging
+// by that made every project look like a root.
+var roots []string
+
+// SetRoots names the scan roots, which are never offered for removal.
+func SetRoots(rs []string) { roots = slices.Clone(rs) }
+
 // isRoot reports whether the item is a whole scan root.
-func isRoot(it *Item) bool { return it.Node != nil && it.Node.Parent == nil }
+func isRoot(it *Item) bool {
+	for _, r := range roots {
+		if it.Path == filepath.Clean(r) {
+			return true
+		}
+	}
+	// Without roots to compare against, fall back to the shape of the walk.
+	return len(roots) == 0 && it.Node != nil && it.Node.Parent == nil
+}
 
 // Projects are the paths of every project in the report, for the git pass.
 func (r *Report) Projects() []string {

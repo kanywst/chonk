@@ -317,3 +317,32 @@ func TestDiscoverIncludesHome(t *testing.T) {
 		t.Error("a global pin in the home directory was not read")
 	}
 }
+
+// A wildcard names a whole line of versions, not the one it resembles, so
+// it must stop the check rather than match nothing.
+func TestApplyStopsOnAWildcardPin(t *testing.T) {
+	if isVersion("node", "22.x") || isVersion("node", "22.*") || isVersion("node", "^22.1.0") {
+		t.Error("a wildcard or range pin was read as an exact version")
+	}
+	n := tree("/h/.nvm", []string{"versions", "node"}, map[string]int64{"v22.16.0": 10, "v24.1.0": 20})
+	it := item("nvm", n)
+	s := newSet()
+	s.add("node", "22.x")
+	Apply(&owner.Report{Items: []*owner.Item{it}}, s)
+	if len(it.Parts) != 0 {
+		t.Errorf("a wildcard pin still flagged %d versions", len(it.Parts))
+	}
+}
+
+// A .nvmrc often writes the version with a leading v.
+func TestPinsWithALeadingVStillMatch(t *testing.T) {
+	n := tree("/h/.nvm", []string{"versions", "node"}, map[string]int64{"v22.16.0": 10, "v24.1.0": 20})
+	it := item("nvm", n)
+	s := newSet()
+	s.add("node", "v22.16.0")
+	s.addDefault("node", "24.1.0")
+	Apply(&owner.Report{Items: []*owner.Item{it}}, s)
+	if len(it.Parts) != 0 {
+		t.Errorf("a v-prefixed pin did not match: %d parts flagged", len(it.Parts))
+	}
+}

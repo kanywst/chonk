@@ -130,7 +130,7 @@ func TestOfAsksAboutHeadAndTags(t *testing.T) {
 		return "", nil
 	}
 	of(context.Background(), run, "/p")
-	for _, want := range []string{"HEAD", "--branches", "--tags", "--not", "--remotes"} {
+	for _, want := range []string{"HEAD", "--branches", "--tags", "--not", "--remotes=origin"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("log args %q are missing %q", got, want)
 		}
@@ -304,5 +304,74 @@ func TestOfSkipsRepositoriesThatNameAProgram(t *testing.T) {
 	}
 	if slices.Contains(ran, "status") || slices.Contains(ran, "log") {
 		t.Errorf("chonk ran %q inside it anyway", ran)
+	}
+}
+
+// The trust check reads the first word, so anything that makes the rest of
+// the value reachable has to be refused outright.
+func TestNamesAProgramCannotBeBypassed(t *testing.T) {
+	for _, line := range []string{
+		"filter.lfs.clean=git-lfs clean -- %f; /tmp/evil",
+		"filter.lfs.clean=git-lfs clean && /tmp/evil",
+		"filter.lfs.clean=git-lfs `/tmp/evil`",
+		"filter.lfs.clean=git-lfs $(/tmp/evil)",
+		"filter.lfs.clean=./git-lfs clean",
+		"filter.lfs.clean=../bin/git-lfs clean",
+		// Settings that hide other settings from this listing, or move
+		// where the repository is.
+		"include.path=/tmp/evil.config",
+		"includeif.gitdir:/.path=/tmp/evil.config",
+		"core.worktree=/elsewhere",
+		"extensions.worktreeconfig=true",
+	} {
+		if !namesAProgram(line) {
+			t.Errorf("%q got through the trust check", line)
+		}
+	}
+}
+
+// Commits pushed only to a remote on this disk are not somewhere else, so
+// "pushed" is judged against the remote chonk names as the way back.
+func TestOfJudgesPushedAgainstTheNamedRemote(t *testing.T) {
+	var logArgs []string
+	run := func(_ context.Context, _ string, args ...string) (string, error) {
+		switch args[0] {
+		case "remote":
+			if len(args) > 1 {
+				if args[len(args)-1] == "backup" {
+					return "/srv/bare.git", nil
+				}
+				return "git@h:o/r.git", nil
+			}
+			return "backup\norigin", nil
+		case "log":
+			logArgs = args
+		}
+		return "", nil
+	}
+	g := of(context.Background(), run, "/p")
+	if g.Remote != "git@h:o/r.git" {
+		t.Errorf("remote = %q, want the one that is not on this disk", g.Remote)
+	}
+	if !slices.Contains(logArgs, "--remotes=origin") {
+		t.Errorf("log args %q do not restrict to the named remote", logArgs)
+	}
+}
+
+// The remote is shown as a `git clone` command to run, so a value that is
+// not plainly an address is not one chonk will print.
+func TestElsewhereRefusesValuesThatAreNotAddresses(t *testing.T) {
+	for _, raw := range []string{
+		"ext::sh -c id",
+		"ext::/tmp/evil",
+		"-oProxyCommand=/tmp/evil",
+		"git@host:path; /tmp/evil",
+		"https://h/o/r.git\n/tmp/evil",
+		"git@:/path",
+		"host:",
+	} {
+		if got := elsewhere(raw); got != "" {
+			t.Errorf("elsewhere(%q) = %q, want empty", raw, got)
+		}
 	}
 }

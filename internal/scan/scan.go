@@ -105,5 +105,6 @@ func Home() (string, error) {
 	}
 	owner.SetHome(h)
 	owner.SetUserTemp(UserTemp())
+	owner.SetRoots(Roots(h))
 	return h, nil
 }

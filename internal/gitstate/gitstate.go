@@ -39,7 +39,17 @@ var safeFlags = []string{
 // A -c cannot clear the ones with a name in the middle (filter.<x>.clean,
 // diff.<x>.textconv), so a repository that sets one is left unknown instead:
 // `git status` runs a clean filter to see whether a file changed.
-var commandKeys = regexp.MustCompile(`(?i)^(core\.(fsmonitor|hookspath|sshcommand|pager|editor)|diff\.external|credential\.helper|uploadpack\.packobjectshook|alias\.|filter\..*\.(clean|smudge|process)$|diff\..*\.textconv$|.*\.(clean|smudge|process|textconv)$)`)
+var commandKeys = regexp.MustCompile(`(?i)^(core\.(fsmonitor|hookspath|sshcommand|pager|editor)|diff\.external|credential\.helper|uploadpack\.packobjectshook|alias\.|.*\.(clean|smudge|process|textconv)$)`)
+
+// configKeys bring in settings chonk never sees in this listing, or move
+// where the repository is, so a repository that sets one is left unknown
+// rather than reasoned about.
+var configKeys = regexp.MustCompile(`(?i)^(include\.path|includeif\.|core\.worktree|extensions\.worktreeconfig)`)
+
+// program is a plain program name or an absolute path to one. A value with
+// anything else in it -- a shell operator, a relative path, whitespace
+// beyond its arguments -- is not something to recognise by its first word.
+var program = regexp.MustCompile(`^(/[A-Za-z0-9._/-]*/)?[A-Za-z0-9._-]+$`)
 
 // trustedPrograms are the programs a repository may legitimately name in its
 // own config. git-lfs is on nearly every large repository, and its filter is
@@ -118,6 +128,7 @@ func of(ctx context.Context, run Run, dir string) owner.Git {
 		g.Known = false
 		return g
 	}
+	var chosen string
 	for name := range strings.SplitSeq(remotes, "\n") {
 		name = strings.TrimSpace(name)
 		if !remoteName.MatchString(name) {
@@ -128,7 +139,7 @@ func of(ctx context.Context, run Run, dir string) owner.Git {
 			continue
 		}
 		if u := elsewhere(url); u != "" {
-			g.Remote = u
+			g.Remote, chosen = u, name
 			break
 		}
 	}
@@ -157,7 +168,11 @@ func of(ctx context.Context, run Run, dir string) owner.Git {
 
 	// HEAD and --tags as well as --branches: a commit made on a detached
 	// HEAD, or left only under a tag, is on this disk and nowhere else.
-	out, err = run(ctx, dir, "log", "HEAD", "--branches", "--tags", "--not", "--remotes", "--format=%h %D")
+	// --remotes=<name>, not --remotes: a repository can have a second
+	// remote that is a directory on this disk, and a commit pushed only
+	// there is not somewhere else. The one being named is the one chonk
+	// offers as the way back.
+	out, err = run(ctx, dir, "log", "HEAD", "--branches", "--tags", "--not", "--remotes="+chosen, "--format=%h %D")
 	if err != nil {
 		g.Known = false
 		return g
@@ -176,26 +191,40 @@ func of(ctx context.Context, run Run, dir string) owner.Git {
 }
 
 // namesAProgram reports whether a config listing sets a key whose value git
-// would run, naming a program that is not one chonk expects to be there.
+// would run, naming a program that is not one chonk expects to be there, or
+// a key that hides such a setting from this listing.
 func namesAProgram(list string) bool {
 	for line := range strings.SplitSeq(list, "\n") {
 		key, value, ok := strings.Cut(line, "=")
-		if !ok || !commandKeys.MatchString(strings.TrimSpace(key)) {
+		if !ok {
 			continue
 		}
-		prog, _, _ := strings.Cut(strings.TrimSpace(value), " ")
-		if !trustedPrograms[prog] && !trustedPrograms[baseOf(prog)] {
+		key = strings.TrimSpace(key)
+		if configKeys.MatchString(key) {
+			return true
+		}
+		if !commandKeys.MatchString(key) {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		// A shell operator anywhere makes the rest of the value reachable,
+		// however the value begins: `git-lfs clean -- %f; evil` would pass
+		// a check that only read the first word.
+		if strings.ContainsAny(value, ";|&$`\n<>()") {
+			return true
+		}
+		prog, _, _ := strings.Cut(value, " ")
+		if !program.MatchString(prog) {
+			return true
+		}
+		if _, last, ok := strings.CutLast(prog, "/"); ok {
+			prog = last
+		}
+		if !trustedPrograms[prog] {
 			return true
 		}
 	}
 	return false
-}
-
-func baseOf(p string) string {
-	if _, last, ok := strings.CutLast(p, "/"); ok {
-		return last
-	}
-	return p
 }
 
 // elsewhere is the remote URL with any credential stripped, when the remote
@@ -207,19 +236,30 @@ func elsewhere(raw string) string {
 	if raw == "" {
 		return ""
 	}
+	// The URL is shown as a `git clone` command to run, so it has to be an
+	// address and nothing else. git's own ext:: transport runs a command,
+	// and a value beginning with a dash would be read as an option.
+	// "::" is git's transport-helper form, as in ext::sh -c, which runs a
+	// command of the repository's choosing.
+	if strings.ContainsAny(raw, " \t;|&$`\n<>()") || strings.HasPrefix(raw, "-") || strings.Contains(raw, "::") {
+		return ""
+	}
 	// scp-style, git@host:path/to.git: a host, so not this disk.
 	if !strings.Contains(raw, "://") {
-		host, _, ok := strings.Cut(raw, ":")
-		if !ok || host == "" || strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, ".") {
+		host, path, ok := strings.Cut(raw, ":")
+		if !ok || path == "" || strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, ".") {
 			return ""
 		}
-		if _, user, hasUser := strings.Cut(host, "@"); hasUser && user == "" {
+		if _, h, hasUser := strings.CutLast(host, "@"); hasUser {
+			host = h
+		}
+		if !hostname.MatchString(host) {
 			return ""
 		}
 		return raw
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.Scheme == "file" {
+	if err != nil || u.Host == "" || !transports[u.Scheme] || !hostname.MatchString(u.Hostname()) {
 		return ""
 	}
 	// A URL can carry a token in its userinfo, and the remote is shown in
@@ -233,6 +273,14 @@ func elsewhere(raw string) string {
 	}
 	return u.String()
 }
+
+// transports are the schemes that name a server to clone from. git's ext::
+// and the local file:// are deliberately absent.
+var transports = map[string]bool{"https": true, "http": true, "ssh": true, "git": true}
+
+// hostname is a plain host or address, with nothing in it a shell or git
+// would read as anything else.
+var hostname = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$`)
 
 // unpushed counts the commits no remote has and names the branches they sit
 // on, from `--format=%h %D` lines: the hash makes every commit a non-empty
