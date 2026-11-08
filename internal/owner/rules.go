@@ -93,6 +93,10 @@ var userTemp string
 // SetUserTemp names the per-user temporary container the rules describe.
 func SetUserTemp(dir string) { userTemp = strings.TrimSuffix(dir, "/") }
 
+// UserTempDir is that container, for the places that must refuse to touch
+// it. Empty when the scan did not find one.
+func UserTempDir() string { return userTemp }
+
 // tempRules describe this login's /var/folders container: macOS's own cache
 // and temporary space, which no directory under the home explains.
 func tempRules() []rule {
@@ -116,8 +120,20 @@ func tempRules() []rule {
 				Regen: "macOS removes it when the app quits, and makes it again on the next launch. Quitting the app is the way to get this space back.",
 			}
 		}),
-		at(userTemp+"/C", cache("darwin-user-cache", "macOS per-user caches", "Each app fills its own part again as it runs.")),
-		at(userTemp+"/T", cache("darwin-user-temp", "macOS per-user temporary files", "Whatever still needs its file writes it again; the rest was already abandoned.")),
+		// No Trash action on either: these are the live DARWIN_USER_CACHE_DIR
+		// and TMPDIR of every running process, and renaming one into the
+		// Trash pulls it out from under them. macOS only recreates it at
+		// the next login, so apps that write there fail until then.
+		at(userTemp+"/C", Owner{
+			ID: "darwin-user-cache", Name: "macOS per-user caches", Kind: KindCache, Safety: Danger,
+			Why:   "Where every running app puts its own caches, outside your home.",
+			Regen: "Each app fills its own part again, but this is the live cache directory: removing the directory itself breaks apps until the next login. Clear an app's own folder inside it instead.",
+		}),
+		at(userTemp+"/T", Owner{
+			ID: "darwin-user-temp", Name: "macOS per-user temporary files", Kind: KindCache, Safety: Danger,
+			Why:   "The TMPDIR of every process you are running.",
+			Regen: "Not all of it is abandoned: open sockets, downloads in flight and installer sessions live here, and this is the live directory, so removing it breaks running apps until the next login.",
+		}),
 		at(userTemp, Owner{
 			ID: "darwin-user-dir", Name: "macOS per-user temporary space", Kind: KindCache, Safety: Careful,
 			Why:   "The directory macOS gives your login for caches and temporary files, outside your home.",
@@ -280,9 +296,9 @@ func rules() []rule {
 		// Outside the home directory: places with one known owner that a
 		// scan of your files alone never reaches.
 		at("/Library/Updates", Owner{
-			ID: "macos-updates", Name: "macOS installer downloads", Kind: KindSystem, Safety: Safe,
-			Why:   "Installers macOS downloaded to apply system updates, kept after the update is done.",
-			Regen: "Downloaded again if an update needs them. Removing them needs root: `sudo rm -rf /Library/Updates/*`.",
+			ID: "macos-updates", Name: "macOS installer downloads", Kind: KindSystem, Safety: Careful,
+			Why:   "Installers macOS downloaded for system updates. Usually ones already applied, but an update that is staged and still pending is here too.",
+			Regen: "An applied update's installer is downloaded again if it is ever needed; a pending one would download again before it can install. Most of this is protected by SIP, so removing it is Software Update's job, not `rm`'s.",
 		}),
 		// Swap and the sleep image sit in one directory as plain files, and
 		// a walk of directories cannot tell them apart, so they are named
@@ -290,7 +306,7 @@ func rules() []rule {
 		at("/private/var/vm", Owner{
 			ID: "vm-swap", Name: "Swap and sleep image", Kind: KindSystem, Safety: Danger,
 			Why:   "The swap macOS is paging memory out to, and sleepimage: what it wrote your memory into when it last hibernated, about as large as the RAM it saved.",
-			Regen: "Swap is in use and macOS sizes it itself. The sleep image is written again on the next hibernation, and removing it does not turn hibernation off: `sudo rm /private/var/vm/sleepimage`, which needs root.",
+			Regen: "Swap is in use and macOS sizes it itself. The sleep image is written again on the next hibernation, so removing it frees the space until then, but it is root-owned and SIP-protected, so it goes through `pmset hibernatemode` rather than `rm`.",
 		}),
 
 		// Trash.

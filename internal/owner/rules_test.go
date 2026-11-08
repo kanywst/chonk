@@ -45,3 +45,24 @@ func TestTempRules(t *testing.T) {
 		t.Error("a clone of a running app was called safe to remove")
 	}
 }
+
+// The live per-user cache and TMPDIR must never carry an action that moves
+// the directory itself: every running process is using it, and macOS only
+// recreates it at the next login.
+func TestTempRulesOfferNoTrashOnLiveDirs(t *testing.T) {
+	t.Cleanup(func() { SetUserTemp("") })
+	SetUserTemp("/var/folders/ab/cd")
+	for _, r := range tempRules() {
+		for _, want := range []string{"/var/folders/ab/cd", "/var/folders/ab/cd/C", "/var/folders/ab/cd/T"} {
+			if r.path != want || r.each {
+				continue
+			}
+			o := r.owner("")
+			for _, a := range o.Actions {
+				if a.Trash {
+					t.Errorf("%s offers to trash the live directory itself", want)
+				}
+			}
+		}
+	}
+}

@@ -155,7 +155,18 @@ func Trash(home, path string) error {
 		return fmt.Errorf("refusing to trash a relative path: %s", path)
 	}
 	// Never the home, a scan root, or anything holding the Trash itself.
-	for _, p := range []string{"/", home, "/Applications", "/opt/homebrew", "/usr/local", "/nix", filepath.Join(home, "Library")} {
+	refuse := []string{"/", home, "/Applications", "/opt/homebrew", "/usr/local", "/nix",
+		"/Library/Updates", "/private/var/vm", filepath.Join(home, "Library")}
+	// The per-user container and the directories in it are the live cache
+	// and TMPDIR of every running process, so they are refused by name
+	// even if some rule ever offers them.
+	if c := owner.UserTempDir(); c != "" {
+		refuse = append(refuse, c)
+		for _, d := range []string{"C", "T", "X", "0"} {
+			refuse = append(refuse, filepath.Join(c, d))
+		}
+	}
+	for _, p := range refuse {
 		if path == filepath.Clean(p) {
 			return fmt.Errorf("refusing to trash %s", path)
 		}

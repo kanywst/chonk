@@ -88,3 +88,22 @@ func TestFree(t *testing.T) {
 		t.Errorf("Free = %d %d %v", free, total, err)
 	}
 }
+
+// Trash refuses the scan roots and the live per-user directories by name,
+// whatever any rule offers.
+func TestTrashRefusesRootsAndLiveDirs(t *testing.T) {
+	home := t.TempDir()
+	owner.SetUserTemp("/var/folders/ab/cd")
+	t.Cleanup(func() { owner.SetUserTemp("") })
+	for _, p := range []string{
+		"/", home, "/Applications", "/opt/homebrew", "/usr/local", "/nix",
+		"/Library/Updates", "/private/var/vm",
+		"/var/folders/ab/cd", "/var/folders/ab/cd/C", "/var/folders/ab/cd/T",
+		"/var/folders/ab/cd/X", "/var/folders/ab/cd/0",
+		filepath.Join(home, "Library"),
+	} {
+		if err := Trash(home, p); err == nil {
+			t.Errorf("Trash(%q) was allowed", p)
+		}
+	}
+}
