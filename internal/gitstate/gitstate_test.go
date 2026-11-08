@@ -375,3 +375,31 @@ func TestElsewhereRefusesValuesThatAreNotAddresses(t *testing.T) {
 		}
 	}
 }
+
+// Trusting a program by its basename is not enough: the repository chooses
+// the path, and git itself can be told where to find binaries.
+func TestNamesAProgramRefusesChosenPathsAndGit(t *testing.T) {
+	for _, line := range []string{
+		"filter.lfs.clean=/tmp/x/git-lfs clean",
+		"filter.lfs.clean=/Users/me/Downloads/git-lfs clean",
+		"filter.lfs.clean=git --exec-path=bin x",
+		"filter.lfs.clean=git status",
+		"core.pager=/tmp/evil",
+	} {
+		if !namesAProgram(line) {
+			t.Errorf("%q got through the trust check", line)
+		}
+	}
+	// git-lfs where git-lfs actually lives is still allowed.
+	for _, line := range []string{
+		"filter.lfs.clean=git-lfs clean -- %f",
+		"filter.lfs.process=/opt/homebrew/bin/git-lfs filter-process",
+		"filter.lfs.smudge=/usr/local/bin/git-lfs smudge -- %f",
+		"core.fsmonitor=true",
+		"core.fsmonitor=",
+	} {
+		if namesAProgram(line) {
+			t.Errorf("%q was wrongly refused", line)
+		}
+	}
+}

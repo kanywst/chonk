@@ -212,3 +212,23 @@ func TestList(t *testing.T) {
 		}
 	}
 }
+
+// Ignored state nothing explains could be a repository of its own, too
+// small or too deep for the walk to have kept, so the project that holds it
+// is described but never offered for removal.
+func TestApplyGitOffersNothingWhenSomethingInsideIsUnexplained(t *testing.T) {
+	n := &walk.Node{Name: "p", Parent: &walk.Node{Name: "/h"}}
+	it := &Item{Owner: new(projectOwner), Path: "/h/p", Node: n, Size: 10}
+	rep := &Report{Items: []*Item{it}}
+	rep.ApplyGit(map[string]Git{"/h/p": {
+		Known: true, Remote: "git@h:o/r.git", Ignored: []string{"vendor/"},
+	}})
+	if it.Owner.Safety != Careful {
+		t.Errorf("safety = %v, want careful", it.Owner.Safety)
+	}
+	for _, a := range it.Owner.Actions {
+		if a.Trash {
+			t.Error("a project holding unexplained ignored state was offered for the Trash")
+		}
+	}
+}

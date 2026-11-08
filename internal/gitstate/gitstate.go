@@ -46,20 +46,26 @@ var commandKeys = regexp.MustCompile(`(?i)^(core\.(fsmonitor|hookspath|sshcomman
 // rather than reasoned about.
 var configKeys = regexp.MustCompile(`(?i)^(include\.path|includeif\.|core\.worktree|extensions\.worktreeconfig)`)
 
-// program is a plain program name or an absolute path to one. A value with
-// anything else in it -- a shell operator, a relative path, whitespace
-// beyond its arguments -- is not something to recognise by its first word.
-var program = regexp.MustCompile(`^(/[A-Za-z0-9._/-]*/)?[A-Za-z0-9._-]+$`)
-
 // trustedPrograms are the programs a repository may legitimately name in its
-// own config. git-lfs is on nearly every large repository, and its filter is
-// the reason this list exists at all. The booleans are there because
-// core.fsmonitor takes one: true means git's own built-in monitor, not a
-// program of someone's choosing.
-var trustedPrograms = map[string]bool{
-	"git-lfs": true, "git": true, "cat": true, "": true,
-	"true": true, "false": true, "0": true, "1": true, "yes": true, "no": true,
+// own config. git-lfs is the reason this list exists: it is on nearly every
+// large repository, and refusing it would turn the feature off in practice.
+// git itself is not here -- `git --exec-path=<dir> x` runs binaries out of a
+// directory the repository chose -- and neither is anything else.
+var trustedPrograms = map[string]bool{"git-lfs": true}
+
+// trustedValues are settings whose value is not a program at all.
+// core.fsmonitor takes a boolean, where true means git's own monitor.
+var trustedValues = map[string]bool{
+	"": true, "true": true, "false": true, "0": true, "1": true, "yes": true, "no": true,
 }
+
+// programDirs are where a program a repository names may live. An absolute
+// path anywhere else is one the repository picked, which is the whole
+// problem: /tmp/x/git-lfs has the right name and is not git-lfs.
+var programDirs = []string{"/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/local/bin/", "/opt/homebrew/bin/", "/opt/local/bin/", "/run/current-system/sw/bin/"}
+
+// program is a plain program name or an absolute path to one.
+var program = regexp.MustCompile(`^(/[A-Za-z0-9._/-]*/)?[A-Za-z0-9._-]+$`)
 
 // Runner returns a Run that calls the real git, or nil when git is not
 // installed.
@@ -207,18 +213,29 @@ func namesAProgram(list string) bool {
 			continue
 		}
 		value = strings.TrimSpace(value)
+		if trustedValues[value] {
+			continue
+		}
 		// A shell operator anywhere makes the rest of the value reachable,
 		// however the value begins: `git-lfs clean -- %f; evil` would pass
-		// a check that only read the first word.
-		if strings.ContainsAny(value, ";|&$`\n<>()") {
+		// a check that only read the first word. An option that tells a
+		// program where to find its own binaries does the same.
+		if strings.ContainsAny(value, ";|&$`\n<>()") || strings.Contains(value, "--exec-path") {
 			return true
 		}
 		prog, _, _ := strings.Cut(value, " ")
 		if !program.MatchString(prog) {
 			return true
 		}
-		if _, last, ok := strings.CutLast(prog, "/"); ok {
-			prog = last
+		if strings.HasPrefix(prog, "/") {
+			var ok bool
+			for _, dir := range programDirs {
+				ok = ok || strings.HasPrefix(prog, dir) && !strings.Contains(prog[len(dir):], "/")
+			}
+			if !ok {
+				return true
+			}
+			_, prog, _ = strings.CutLast(prog, "/")
 		}
 		if !trustedPrograms[prog] {
 			return true

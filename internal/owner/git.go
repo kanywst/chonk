@@ -55,8 +55,11 @@ func (g Git) describe(parts []*Item) (Safety, string, string) {
 		return Careful, "A git working tree that was clean and fully pushed when this scan ran.",
 			clone + "; the build output inside is rebuilt."
 	}
+	// Ignored state chonk cannot account for could be anything, a clone
+	// with its own unpushed work included, so this says what is there and
+	// offers nothing. Only the branch above is offered for removal.
 	return Careful, "A git working tree, clean and pushed, holding local state that is not in git.",
-		clone + ", but not " + list(left) + "."
+		clone + ", but not " + list(left) + ", which nothing here explains."
 }
 
 // risks names what only this disk has, biggest worry first.
@@ -149,7 +152,11 @@ func (r *Report) ApplyGit(states map[string]Git) {
 		// it: a dotfiles repository at ~, or a /usr/local that is a
 		// checkout, is a root first. Classify drops the actions of a root
 		// for this reason, and this must not put one back.
-		if o.Safety != Danger && !isRoot(it) {
+		// Only a tree with nothing unaccounted for inside it: an ignored
+		// directory chonk cannot explain may hold a repository of its own,
+		// too small or too deep for the walk to have kept, and removing
+		// the project would take that with it.
+		if o.Safety != Danger && !isRoot(it) && len(g.unexplained(it.Parts)) == 0 {
 			o.Actions = append(append([]Action{}, o.Actions...), trash(o.Safety))
 		}
 		it.Owner = &o
