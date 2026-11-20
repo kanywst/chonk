@@ -93,6 +93,8 @@ func TestClassify(t *testing.T) {
 		"mystery/deep/other":                                   gib / 10,
 		"tiny":                                                 1 << 20,
 		".local/share/containers/podman/machine/applehv":       16 * gib,
+		".nuget/packages/newtonsoft.json":                      gib / 4,
+		".net/Updates/mzwWoGBh6lOK":                            gib / 4,
 	}, map[string]walk.Marker{
 		"proj":            walk.MarkGit | walk.MarkCargo,
 		"proj/vendor/sub": walk.MarkGit | walk.MarkPackageJSON,
@@ -120,6 +122,16 @@ func TestClassify(t *testing.T) {
 	}
 	if it := find(t, rep, "/home/u/.local/share/containers/podman/machine"); it.Owner.Kind != KindVM {
 		t.Errorf("podman = %+v", it.Owner)
+	}
+	if it := find(t, rep, "/home/u/.nuget/packages"); it.Owner.ID != "nuget" || it.Owner.Safety != Careful {
+		t.Errorf("nuget = %+v", it.Owner)
+	} else if got := it.Owner.Actions[0].Expand(it.Path).Command(); got != "NUGET_PACKAGES=/home/u/.nuget/packages dotnet nuget locals global-packages --clear" {
+		// NuGet clears whatever folder it resolves, so the command is pinned
+		// to the one chonk measured.
+		t.Errorf("nuget clean = %q", got)
+	}
+	if it := find(t, rep, "/home/u/.net"); it.Owner.ID != "dotnet-bundle-extract" || it.Owner.Safety != Careful {
+		t.Errorf(".net = %+v", it.Owner)
 	}
 
 	p := find(t, rep, "/home/u/proj")

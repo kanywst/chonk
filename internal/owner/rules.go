@@ -266,6 +266,23 @@ func rules() []rule {
 		at("~/Library/Caches/pip", cache("pip", "pip cache", "Packages are downloaded again on the next install.", run("Clean", Safe, "pip3", "cache", "purge"))),
 		at("~/.gradle/caches", cache("gradle", "Gradle cache", "Dependencies are downloaded and builds rerun.")),
 		at("~/.m2/repository", cache("maven", "Maven repository", "Dependencies are downloaded again on the next build.")),
+		// Careful, not Safe: a package from a private or offline feed comes
+		// back only while that feed is reachable.
+		at("~/.nuget/packages", Owner{
+			ID: "nuget", Name: "NuGet packages", Kind: KindCache, Safety: Careful,
+			Why:   "NuGet keeps every package a .NET build restored here, so it does not download it again.",
+			Regen: "Packages are restored again on the next build; ones from a private or offline feed need that feed again.",
+			// NuGet clears whatever folder it resolves, so pin it to this one.
+			Actions: []Action{withEnv(run("Clean", Careful, "dotnet", "nuget", "locals", "global-packages", "--clear"), "NUGET_PACKAGES={path}"), trash(Careful)},
+		}),
+		// A single-file .NET app unpacks its assemblies here on first launch,
+		// one directory per build, and never removes the old ones.
+		at("~/.net", Owner{
+			ID: "dotnet-bundle-extract", Name: ".NET single-file app extractions", Kind: KindCache, Safety: Careful,
+			Why:     "Single-file .NET apps unpack their assemblies here when they start, one copy per build; copies from builds you updated past stay behind.",
+			Regen:   "Each app unpacks itself again on its next launch. An app running now may still be using its copy.",
+			Actions: []Action{trash(Careful)},
+		}),
 		at("~/.nvm", Owner{ID: "nvm", Name: "nvm Node versions", Kind: KindToolchain, Safety: Careful, Why: "Every Node.js version nvm installed, each with its own global packages.", Regen: "A removed version is downloaded again by `nvm install`."}),
 		at("~/.local/share/mise", Owner{
 			ID: "mise", Name: "mise tools", Kind: KindToolchain, Safety: Careful,
