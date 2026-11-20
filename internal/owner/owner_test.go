@@ -125,6 +125,10 @@ func TestClassify(t *testing.T) {
 	}
 	if it := find(t, rep, "/home/u/.nuget/packages"); it.Owner.ID != "nuget" || it.Owner.Safety != Safe {
 		t.Errorf("nuget = %+v", it.Owner)
+	} else if got := it.Owner.Actions[0].Expand(it.Path).Command(); got != "NUGET_PACKAGES=/home/u/.nuget/packages dotnet nuget locals global-packages --clear" {
+		// NuGet clears whatever folder it resolves, so the command is pinned
+		// to the one chonk measured.
+		t.Errorf("nuget clean = %q", got)
 	}
 	if it := find(t, rep, "/home/u/.net"); it.Owner.ID != "dotnet-bundle-extract" || it.Owner.Safety != Careful {
 		t.Errorf(".net = %+v", it.Owner)
