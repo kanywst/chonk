@@ -123,7 +123,7 @@ func TestClassify(t *testing.T) {
 	if it := find(t, rep, "/home/u/.local/share/containers/podman/machine"); it.Owner.Kind != KindVM {
 		t.Errorf("podman = %+v", it.Owner)
 	}
-	if it := find(t, rep, "/home/u/.nuget/packages"); it.Owner.ID != "nuget" || it.Owner.Safety != Safe {
+	if it := find(t, rep, "/home/u/.nuget/packages"); it.Owner.ID != "nuget" || it.Owner.Safety != Careful {
 		t.Errorf("nuget = %+v", it.Owner)
 	} else if got := it.Owner.Actions[0].Expand(it.Path).Command(); got != "NUGET_PACKAGES=/home/u/.nuget/packages dotnet nuget locals global-packages --clear" {
 		// NuGet clears whatever folder it resolves, so the command is pinned

@@ -266,7 +266,15 @@ func rules() []rule {
 		at("~/Library/Caches/pip", cache("pip", "pip cache", "Packages are downloaded again on the next install.", run("Clean", Safe, "pip3", "cache", "purge"))),
 		at("~/.gradle/caches", cache("gradle", "Gradle cache", "Dependencies are downloaded and builds rerun.")),
 		at("~/.m2/repository", cache("maven", "Maven repository", "Dependencies are downloaded again on the next build.")),
-		at("~/.nuget/packages", cache("nuget", "NuGet packages", "Packages are restored again on the next build; ones from a private or offline feed need that feed again.", withEnv(run("Clean", Safe, "dotnet", "nuget", "locals", "global-packages", "--clear"), "NUGET_PACKAGES={path}"))),
+		// Careful, not Safe: a package from a private or offline feed comes
+		// back only while that feed is reachable.
+		at("~/.nuget/packages", Owner{
+			ID: "nuget", Name: "NuGet packages", Kind: KindCache, Safety: Careful,
+			Why:   "NuGet keeps every package a .NET build restored here, so it does not download it again.",
+			Regen: "Packages are restored again on the next build; ones from a private or offline feed need that feed again.",
+			// NuGet clears whatever folder it resolves, so pin it to this one.
+			Actions: []Action{withEnv(run("Clean", Careful, "dotnet", "nuget", "locals", "global-packages", "--clear"), "NUGET_PACKAGES={path}"), trash(Careful)},
+		}),
 		// A single-file .NET app unpacks its assemblies here on first launch,
 		// one directory per build, and never removes the old ones.
 		at("~/.net", Owner{
