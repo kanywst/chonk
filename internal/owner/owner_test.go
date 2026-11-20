@@ -93,6 +93,8 @@ func TestClassify(t *testing.T) {
 		"mystery/deep/other":                                   gib / 10,
 		"tiny":                                                 1 << 20,
 		".local/share/containers/podman/machine/applehv":       16 * gib,
+		".nuget/packages/newtonsoft.json":                      gib / 4,
+		".net/Updates/mzwWoGBh6lOK":                            gib / 4,
 	}, map[string]walk.Marker{
 		"proj":            walk.MarkGit | walk.MarkCargo,
 		"proj/vendor/sub": walk.MarkGit | walk.MarkPackageJSON,
@@ -120,6 +122,12 @@ func TestClassify(t *testing.T) {
 	}
 	if it := find(t, rep, "/home/u/.local/share/containers/podman/machine"); it.Owner.Kind != KindVM {
 		t.Errorf("podman = %+v", it.Owner)
+	}
+	if it := find(t, rep, "/home/u/.nuget/packages"); it.Owner.ID != "nuget" || it.Owner.Safety != Safe {
+		t.Errorf("nuget = %+v", it.Owner)
+	}
+	if it := find(t, rep, "/home/u/.net"); it.Owner.ID != "dotnet-bundle-extract" || it.Owner.Safety != Careful {
+		t.Errorf(".net = %+v", it.Owner)
 	}
 
 	p := find(t, rep, "/home/u/proj")
