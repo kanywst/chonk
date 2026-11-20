@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/kanywst/chonk/compare/v0.3.0...v0.4.0) (2026-11-20)
+
+
+### Features
+
+* **owner:** claim the NuGet package cache and .NET single-file extractions ([#11](https://github.com/kanywst/chonk/issues/11)) ([07bbeea](https://github.com/kanywst/chonk/commit/07bbeea15b79a24f1be189d6bb554af2e7c8ebfa))
+
 ## [0.3.0](https://github.com/kanywst/chonk/compare/v0.2.0...v0.3.0) (2026-11-08)
 
 
